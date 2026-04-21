@@ -99,4 +99,10 @@ if config_env() == :prod do
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
+
+  # JWKS URL used by the JWT authenticate plug to verify tokens issued by
+  # the auth-service. The strategy module (WhisprCalls.JwksStrategy) reads
+  # this at runtime.
+  config :whispr_calls,
+    jwks_url: System.fetch_env!("JWT_JWKS_URL")
 end
