@@ -155,6 +155,60 @@ defmodule WhisprCalls.Calls do
     {:ok, updated}
   end
 
+  @doc """
+  Returns calls in which `user_id` is a participant. Supports optional
+  filters: `:status`, `:conversation_id`, `:limit` (default 50).
+  Ordered by `started_at` desc.
+  """
+  @spec list_user_calls(uuid(), map()) :: [Call.t()]
+  def list_user_calls(user_id, filters \\ %{}) do
+    limit = Map.get(filters, :limit, 50)
+
+    query =
+      from c in Call,
+        join: p in CallParticipant,
+        on: p.call_id == c.id,
+        where: p.user_id == ^user_id,
+        order_by: [desc: c.started_at],
+        limit: ^limit
+
+    query
+    |> maybe_filter_status(filters)
+    |> maybe_filter_conversation(filters)
+    |> Repo.all()
+  end
+
+  defp maybe_filter_status(query, %{status: status}) when is_binary(status) do
+    from [c, _p] in query, where: c.status == ^status
+  end
+
+  defp maybe_filter_status(query, _), do: query
+
+  defp maybe_filter_conversation(query, %{conversation_id: conv}) when is_binary(conv) do
+    from [c, _p] in query, where: c.conversation_id == ^conv
+  end
+
+  defp maybe_filter_conversation(query, _), do: query
+
+  @doc """
+  Returns the call if `user_id` is one of its participants, otherwise
+  `{:error, :not_found}`.
+  """
+  @spec get_call_if_participant(uuid(), uuid()) :: {:ok, Call.t()} | {:error, :not_found}
+  def get_call_if_participant(call_id, user_id) do
+    query =
+      from c in Call,
+        join: p in CallParticipant,
+        on: p.call_id == c.id,
+        where: c.id == ^call_id and p.user_id == ^user_id,
+        limit: 1
+
+    case Repo.one(query) do
+      nil -> {:error, :not_found}
+      %Call{} = call -> {:ok, call}
+    end
+  end
+
   defp fetch_call(call_id) do
     case Repo.get(Call, call_id) do
       nil -> {:error, :call_not_found}

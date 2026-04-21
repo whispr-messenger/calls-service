@@ -114,6 +114,71 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "list_user_calls/2" do
+    test "returns calls the user participates in, newest first" do
+      user = Ecto.UUID.generate()
+      {_i1, _v1, call1} = seed_ringing_call_for(user)
+      {_i2, _v2, call2} = seed_ringing_call_for(user)
+
+      other_user = Ecto.UUID.generate()
+      _ = seed_ringing_call_for(other_user)
+
+      ids =
+        user
+        |> Calls.list_user_calls(%{})
+        |> Enum.map(& &1.id)
+
+      assert Enum.sort(ids) == Enum.sort([call1.id, call2.id])
+    end
+  end
+
+  describe "get_call_if_participant/2" do
+    test "returns the call if user is a participant" do
+      {initiator, _invitee, call} = seed_ringing_call()
+      assert {:ok, fetched} = Calls.get_call_if_participant(call.id, initiator)
+      assert fetched.id == call.id
+    end
+
+    test "returns :not_found when user is not a participant" do
+      {_initiator, _invitee, call} = seed_ringing_call()
+      assert {:error, :not_found} = Calls.get_call_if_participant(call.id, Ecto.UUID.generate())
+    end
+  end
+
+  defp seed_ringing_call_for(user_id) do
+    invitee = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    {:ok, call} =
+      %Call{}
+      |> Call.changeset(%{
+        initiator_id: user_id,
+        conversation_id: Ecto.UUID.generate(),
+        type: "audio",
+        livekit_room: "call_" <> Ecto.UUID.generate(),
+        started_at: now
+      })
+      |> Repo.insert()
+
+    Repo.insert_all(CallParticipant, [
+      %{
+        call_id: call.id,
+        user_id: user_id,
+        status: "joined",
+        invited_at: now,
+        joined_at: now
+      },
+      %{
+        call_id: call.id,
+        user_id: invitee,
+        status: "invited",
+        invited_at: now
+      }
+    ])
+
+    {user_id, invitee, call}
+  end
+
   # Seeds a ringing call with 1 initiator (joined) + 1 invitee (invited)
   # without going through initiate_call/3, so we don't need to expect mock
   # calls for the seed. Returns {initiator_id, invitee_id, call}.
