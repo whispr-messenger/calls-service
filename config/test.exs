@@ -6,12 +6,18 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :whispr_calls, WhisprCalls.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  database: "whispr_calls_test#{System.get_env("MIX_TEST_PARTITION")}",
+  hostname: System.get_env("DATABASE_HOST", "localhost"),
+  port: String.to_integer(System.get_env("DATABASE_PORT", "5432")),
+  username: System.get_env("DATABASE_USER", "postgres"),
+  password: System.get_env("DATABASE_PASSWORD", "postgres"),
+  database:
+    System.get_env(
+      "DATABASE_NAME",
+      "whispr_calls_test#{System.get_env("MIX_TEST_PARTITION")}"
+    ),
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size:
+    String.to_integer(System.get_env("DATABASE_POOL_SIZE", "#{System.schedulers_online() * 2}"))
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
