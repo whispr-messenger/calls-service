@@ -73,6 +73,88 @@ defmodule WhisprCalls.Calls do
     end
   end
 
+  @doc """
+  Declines a ringing call: flips the participant status to `declined`.
+  Publishes a Redis event so the initiator gets notified.
+  """
+  @spec decline_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
+  def decline_call(call_id, user_id) do
+    with {:ok, call} <- fetch_call(call_id),
+         {:ok, participant} <- fetch_participant(call_id, user_id),
+         {:ok, _updated} <-
+           participant
+           |> CallParticipant.changeset(%{status: "declined"})
+           |> Repo.update() do
+      _ =
+        Publisher.publish("whispr:calls:declined", %{
+          call_id: call.id,
+          user_id: user_id,
+          declined_at: DateTime.to_iso8601(DateTime.utc_now())
+        })
+
+      {:ok, call}
+    end
+  end
+
+  @doc """
+  A participant leaves the call. If they are the last active participant,
+  the call transitions to `ended`, duration is computed and the LiveKit
+  room is deleted.
+  """
+  @spec end_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
+  def end_call(call_id, user_id) do
+    with {:ok, call} <- fetch_call(call_id),
+         {:ok, participant} <- fetch_participant(call_id, user_id),
+         {:ok, _updated} <-
+           participant
+           |> CallParticipant.changeset(%{status: "left", left_at: DateTime.utc_now()})
+           |> Repo.update() do
+      finalize_or_continue(call)
+    end
+  end
+
+  defp finalize_or_continue(%Call{} = call) do
+    if has_active_participants?(call.id) do
+      {:ok, call}
+    else
+      finalize_call(call, "all_left")
+    end
+  end
+
+  defp has_active_participants?(call_id) do
+    Repo.exists?(
+      from p in CallParticipant,
+        where: p.call_id == ^call_id and p.status == "joined"
+    )
+  end
+
+  defp finalize_call(%Call{} = call, reason) do
+    now = DateTime.utc_now()
+    duration = DateTime.diff(now, call.connected_at || call.started_at, :second)
+
+    {:ok, updated} =
+      call
+      |> Call.changeset(%{
+        status: "ended",
+        ended_at: now,
+        duration_seconds: duration,
+        end_reason: reason
+      })
+      |> Repo.update()
+
+    _ = LiveKitClient.delete_room(call.livekit_room)
+
+    _ =
+      Publisher.publish("whispr:calls:ended", %{
+        call_id: updated.id,
+        ended_at: DateTime.to_iso8601(now),
+        duration_seconds: duration,
+        end_reason: reason
+      })
+
+    {:ok, updated}
+  end
+
   defp fetch_call(call_id) do
     case Repo.get(Call, call_id) do
       nil -> {:error, :call_not_found}
