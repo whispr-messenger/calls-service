@@ -20,4 +20,11 @@ defmodule WhisprCallsWeb.Router do
     post "/calls/:id/decline", CallController, :decline
     delete "/calls/:id", CallController, :end_call
   end
+
+  scope "/health", WhisprCallsWeb do
+    pipe_through :public
+
+    get "/live", HealthController, :live
+    get "/ready", HealthController, :ready
+  end
 end
