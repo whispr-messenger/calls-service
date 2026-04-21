@@ -20,6 +20,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
   secret_key_base: "krMz6zrvCKT7XekiNeN2CPCh9YR3NHlf2a7gD9/R76gdsIzGCH1x2SirLzARJ3oJ",
   server: false
 
+# JWT signer used by authenticate plug in test env.
+# Stored as {algorithm, secret} and materialised into a Joken.Signer lazily
+# (Joken is not loaded at config-compile time).
+config :whispr_calls, jwt_signer: {"HS256", "test_secret"}
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
