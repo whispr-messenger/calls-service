@@ -1,0 +1,86 @@
+# Docker Compose for WhisprCalls Test Environment
+name: whispr-calls-test
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: whispr-calls-test-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: whispr_calls_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: whispr-calls-test-redis
+    expose:
+      - "6379"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    tmpfs:
+      - /data
+
+  test-runner:
+    build:
+      context: ../..
+      dockerfile: docker/test/Dockerfile
+      cache_from:
+        - whispr-calls-test:latest
+    container_name: whispr-calls-test-runner
+    environment:
+      MIX_ENV: test
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_NAME: whispr_calls_test
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ../..:/app
+      - test-deps:/app/deps
+      - test-build:/app/_build
+      - ../../cover:/app/cover
+    networks:
+      - test-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      /bin/bash -c "
+        mix deps.get &&
+        mix ecto.create --quiet &&
+        mix ecto.migrate --quiet &&
+        mix test &&
+        mix coveralls.html &&
+        mix coveralls.xml &&
+        mix coveralls.cobertura
+      "
+
+volumes:
+  test-deps:
+    driver: local
+  test-build:
+    driver: local
+
+networks:
+  test-network:
+    driver: bridge

@@ -1,0 +1,94 @@
+# Docker Compose for WhisprCalls Development Environment
+name: whispr-calls
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: whispr-calls-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: ${POSTGRES_INITDB_ARGS}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    networks:
+      - whispr-calls-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: whispr-calls-redis-dev
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - whispr-calls-network
+
+  calls-service:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+      cache_from:
+        - whispr-calls-api:latest
+    container_name: whispr-calls-api-dev
+    env_file: .env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_NAME: ${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ../..:/app
+      - deps:/app/deps
+      - build:/app/_build
+    ports:
+      - "${HTTP_PORT:-8080}:${PORT:-4002}"
+      - "${GRPC_PORT:-50052}:50052"
+    networks:
+      - whispr-calls-network
+      - whispr-common-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-4002}/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  deps:
+    driver: local
+  build:
+    driver: local
+
+networks:
+  whispr-calls-network:
+  whispr-common-network:
+    driver: bridge

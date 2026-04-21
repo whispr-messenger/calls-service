@@ -1,0 +1,6 @@
+curl
+tini
+inotify-tools
+build-essential
+postgresql-client
+git
