@@ -12,8 +12,8 @@ defmodule WhisprCalls.Application do
       WhisprCalls.Repo,
       {DNSCluster, query: Application.get_env(:whispr_calls, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: WhisprCalls.PubSub},
-      # Start a worker by calling: WhisprCalls.Worker.start_link(arg)
-      # {WhisprCalls.Worker, arg},
+      {Redix,
+       {Application.get_env(:whispr_calls, :redis_url, "redis://localhost:6379"), [name: :redix]}},
       # Start to serve requests, typically the last entry
       WhisprCallsWeb.Endpoint
     ]
