@@ -1,0 +1,4 @@
+# Configuration lue par Codecov pour ce dépôt (voir https://docs.codecov.com/docs/fixing-paths).
+# Les rapports Cobertura générés dans Docker listent des <source> du type /app/lib, /app/test/support, etc.
+fixes:
+  - "/app/::"

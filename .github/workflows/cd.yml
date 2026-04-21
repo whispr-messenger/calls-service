@@ -1,0 +1,224 @@
+name: CD Pipeline
+
+on:
+  workflow_run:
+    workflows: ['🚀 CI Pipeline']
+    types: [completed]
+    branches: [main, develop, deploy/avant-preprod, deploy/preprod]
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to deploy (leave empty for latest)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  update-deployment:
+    if: ${{ (github.event.workflow_run.event == 'push') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    name: Update Deployment Manifest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ secrets.ACTIONS_CD }}
+          private_key: ${{ secrets.ACTIONS_CD_PRIVATE_KEY }}
+
+      - name: Checkout calls-service
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || 'main' }}
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Validate and determine commit SHA
+        id: validate_commit
+        run: |
+          # Determine the commit SHA based on trigger type
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual trigger - use input or current commit
+            if [ -n "${{ inputs.commit_sha }}" ]; then
+              COMMIT_SHA="${{ inputs.commit_sha }}"
+              echo "Validating manually provided commit SHA: $COMMIT_SHA"
+
+              # Validate SHA format (40 hex characters for full SHA or 7+ for short SHA)
+              if ! echo "$COMMIT_SHA" | grep -qE '^[a-fA-F0-9]{7,40}$'; then
+                echo "❌ Error: Invalid commit SHA format. Must be 7-40 hexadecimal characters."
+                exit 1
+              fi
+
+              # Verify the commit exists in the repository
+              if ! git rev-parse --verify "${COMMIT_SHA}^{commit}" >/dev/null 2>&1; then
+                echo "❌ Error: Commit SHA '${COMMIT_SHA}' does not exist in the repository."
+                echo "Please provide a valid commit SHA from the main branch."
+                exit 1
+              fi
+
+              # Get the full SHA if a short SHA was provided
+              COMMIT_SHA=$(git rev-parse --verify "${COMMIT_SHA}^{commit}")
+              echo "✅ Commit SHA validated successfully"
+              echo "Using manually provided commit SHA: $COMMIT_SHA"
+            else
+              COMMIT_SHA="${{ github.sha }}"
+              echo "Using current commit SHA: $COMMIT_SHA"
+            fi
+          else
+            # Automatic trigger from CI workflow
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            # If empty, use github.sha as fallback
+            if [ -z "$COMMIT_SHA" ]; then
+              COMMIT_SHA="${{ github.sha }}"
+              echo "Using github.sha as fallback: $COMMIT_SHA"
+            fi
+          fi
+
+          # Store COMMIT_SHA as output for use in subsequent steps
+          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Determine trigger branch
+        id: branch_info
+        run: |
+          TRIGGER_BRANCH="${{ github.event.workflow_run.head_branch || 'main' }}"
+          echo "trigger_branch=${TRIGGER_BRANCH}" >> $GITHUB_OUTPUT
+          if [ "$TRIGGER_BRANCH" = "main" ]; then
+            echo "infra_branch=main" >> $GITHUB_OUTPUT
+          else
+            echo "infra_branch=deploy/preprod" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout infrastructure repository
+        uses: actions/checkout@v4
+        with:
+          repository: whispr-messenger/infrastructure
+          ref: ${{ steps.branch_info.outputs.infra_branch }}
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Pull latest infrastructure
+        run: |
+          git checkout ${{ steps.branch_info.outputs.infra_branch }}
+          git pull origin ${{ steps.branch_info.outputs.infra_branch }}
+
+      - name: Update image tag in deployment
+        id: update_image
+        run: |
+          # Use the validated commit SHA from the previous step
+          COMMIT_SHA="${{ steps.validate_commit.outputs.commit_sha }}"
+
+          # Extract short SHA safely using printf (7 characters, matching docker metadata-action default)
+          SHORT_SHA=$(printf "%.7s" "$COMMIT_SHA")
+
+          # Use the short SHA tag format that matches the CI docker workflow
+          IMAGE_TAG="sha-${SHORT_SHA}"
+
+          # Build the full image reference with lowercase (OCI requirement)
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          FULL_IMAGE=$(echo "${FULL_IMAGE}" | tr '[:upper:]' '[:lower:]')
+
+          TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
+
+          echo "Commit SHA: $COMMIT_SHA"
+          echo "Short SHA: $SHORT_SHA"
+          echo "Image tag: $IMAGE_TAG"
+          echo "Trigger branch: $TRIGGER_BRANCH"
+          echo "Updating deployment image to: ${FULL_IMAGE}"
+
+          if [ "$TRIGGER_BRANCH" = "main" ]; then
+            # Update all three directories on main
+            echo "Updating prod, production, and preprod manifests..."
+
+            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/prod/calls-service/deployment.yaml
+            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/production/calls-service/deployment.yaml
+            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/deployment.yaml
+
+            # Update migration-job only if it exists
+            for DIR in prod preprod; do
+              if [ -f "k8s/whispr/${DIR}/calls-service/migration-job.yaml" ]; then
+                yq -i 'select(.kind == "Job").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' "k8s/whispr/${DIR}/calls-service/migration-job.yaml"
+              fi
+            done
+          else
+            # Only update preprod on non-main branches
+            echo "Updating preprod manifests only..."
+
+            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/deployment.yaml
+            if [ -f k8s/whispr/preprod/calls-service/migration-job.yaml ]; then
+              yq -i 'select(.kind == "Job").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/migration-job.yaml
+            fi
+          fi
+
+      - name: Verify update
+        run: |
+          TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
+
+          if [ "$TRIGGER_BRANCH" = "main" ]; then
+            echo "=== prod deployment ==="
+            yq '.spec.template.spec.containers[0].image' k8s/whispr/prod/calls-service/deployment.yaml
+            echo "=== production deployment ==="
+            yq '.spec.template.spec.containers[0].image' k8s/whispr/production/calls-service/deployment.yaml
+            echo "=== preprod deployment ==="
+            yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/deployment.yaml
+            echo "=== prod migration-job ==="
+            if [ -f k8s/whispr/prod/calls-service/migration-job.yaml ]; then
+              yq '.spec.template.spec.containers[0].image' k8s/whispr/prod/calls-service/migration-job.yaml
+            else
+              echo "No migration-job in prod"
+            fi
+            if [ -f k8s/whispr/preprod/calls-service/migration-job.yaml ]; then
+              echo "=== preprod migration-job ==="
+              yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/migration-job.yaml
+            fi
+          else
+            echo "=== preprod deployment ==="
+            yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/deployment.yaml
+          fi
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
+          INFRA_BRANCH="${{ steps.branch_info.outputs.infra_branch }}"
+
+          # Determine which files to check and add
+          if [ "$TRIGGER_BRANCH" = "main" ]; then
+            FILES_TO_ADD="k8s/whispr/prod/calls-service/deployment.yaml k8s/whispr/production/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/deployment.yaml"
+          else
+            FILES_TO_ADD="k8s/whispr/preprod/calls-service/deployment.yaml"
+          fi
+
+          # Check if there are changes to commit
+          if git diff --quiet $FILES_TO_ADD; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          # Use the validated commit SHA determined in the previous step
+          COMMIT_SHA="${{ steps.validate_commit.outputs.commit_sha }}"
+
+          # Build commit message based on trigger type
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            COMMIT_MSG="🔧 chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7} (manual trigger)"
+          else
+            COMMIT_MSG="🔧 chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7}"
+          fi
+
+          git add $FILES_TO_ADD
+          git commit -m "${COMMIT_MSG}"
+
+          git pull origin "${INFRA_BRANCH}" --rebase
+          git push https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com/whispr-messenger/infrastructure.git HEAD:"${INFRA_BRANCH}"
