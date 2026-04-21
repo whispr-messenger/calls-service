@@ -31,6 +31,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
 # (Joken is not loaded at config-compile time).
 config :whispr_calls, jwt_signer: {"HS256", "test_secret"}
 
+# LiveKit configuration used by the Calls context in tests. The HTTP impl
+# is never invoked (LiveKitClientMock takes over), but the public URL is
+# embedded into the response so clients know where to connect.
+config :whispr_calls, livekit_public_url: "wss://livekit.test"
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
