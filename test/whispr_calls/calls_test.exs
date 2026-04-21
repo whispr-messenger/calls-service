@@ -66,6 +66,54 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "decline_call/2" do
+    setup do
+      {initiator, invitee, call} = seed_ringing_call()
+      %{initiator: initiator, invitee: invitee, call: call}
+    end
+
+    test "marks participant as declined", %{invitee: invitee, call: call} do
+      assert {:ok, _call} = Calls.decline_call(call.id, invitee)
+
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: invitee)
+      assert participant.status == "declined"
+    end
+
+    test "returns :not_invited for non-participant", %{call: call} do
+      assert {:error, :not_invited} = Calls.decline_call(call.id, Ecto.UUID.generate())
+    end
+  end
+
+  describe "end_call/2" do
+    setup do
+      {initiator, invitee, call} = seed_connected_call()
+      %{initiator: initiator, invitee: invitee, call: call}
+    end
+
+    test "marks last participant as left and ends the call + deletes room",
+         %{initiator: initiator, invitee: invitee, call: call} do
+      # invitee leaves first (non-last) - no room delete expected
+      assert {:ok, _} = Calls.end_call(call.id, invitee)
+      assert Repo.get!(Call, call.id).status == "connected"
+
+      # initiator leaves - last one, room gets deleted
+      expect(LiveKitClientMock, :delete_room, fn _room -> :ok end)
+
+      assert {:ok, updated_call} = Calls.end_call(call.id, initiator)
+      assert updated_call.status == "ended"
+      assert %DateTime{} = updated_call.ended_at
+      assert is_integer(updated_call.duration_seconds)
+      assert updated_call.duration_seconds >= 0
+
+      participants = Repo.all(CallParticipant)
+      assert Enum.all?(participants, &(&1.status == "left"))
+    end
+
+    test "returns :not_invited for non-participant", %{call: call} do
+      assert {:error, :not_invited} = Calls.end_call(call.id, Ecto.UUID.generate())
+    end
+  end
+
   # Seeds a ringing call with 1 initiator (joined) + 1 invitee (invited)
   # without going through initiate_call/3, so we don't need to expect mock
   # calls for the seed. Returns {initiator_id, invitee_id, call}.
@@ -98,6 +146,45 @@ defmodule WhisprCalls.CallsTest do
         user_id: invitee,
         status: "invited",
         invited_at: now
+      }
+    ])
+
+    {initiator, invitee, call}
+  end
+
+  # Seeds a connected call with both users joined.
+  defp seed_connected_call do
+    initiator = Ecto.UUID.generate()
+    invitee = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    {:ok, call} =
+      %Call{}
+      |> Call.changeset(%{
+        initiator_id: initiator,
+        conversation_id: Ecto.UUID.generate(),
+        type: "video",
+        livekit_room: "call_" <> Ecto.UUID.generate(),
+        started_at: now,
+        connected_at: now,
+        status: "connected"
+      })
+      |> Repo.insert()
+
+    Repo.insert_all(CallParticipant, [
+      %{
+        call_id: call.id,
+        user_id: initiator,
+        status: "joined",
+        invited_at: now,
+        joined_at: now
+      },
+      %{
+        call_id: call.id,
+        user_id: invitee,
+        status: "joined",
+        invited_at: now,
+        joined_at: now
       }
     ])
 
