@@ -27,4 +27,10 @@ defmodule WhisprCallsWeb.Router do
     get "/live", HealthController, :live
     get "/ready", HealthController, :ready
   end
+
+  scope "/calls/webhooks", WhisprCallsWeb do
+    pipe_through :public
+
+    post "/livekit", LiveKitWebhookController, :handle
+  end
 end
