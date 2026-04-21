@@ -21,6 +21,8 @@ defmodule WhisprCalls.Calls.Call do
     field :duration_seconds, :integer
     field :end_reason, :string
 
+    has_many :participants, WhisprCalls.Calls.CallParticipant
+
     timestamps(type: :utc_datetime_usec)
   end
 
