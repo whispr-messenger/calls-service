@@ -209,6 +209,33 @@ defmodule WhisprCalls.Calls do
     end
   end
 
+  @doc """
+  Handles a `room_finished` webhook from LiveKit. Idempotent: does nothing
+  if the call is already ended, otherwise finalizes it with end_reason
+  `room_finished`.
+  """
+  @spec handle_room_finished(String.t()) :: {:ok, Call.t()} | {:error, :not_found}
+  def handle_room_finished(livekit_room) when is_binary(livekit_room) do
+    case Repo.get_by(Call, livekit_room: livekit_room) do
+      nil -> {:error, :not_found}
+      %Call{status: "ended"} = call -> {:ok, call}
+      %Call{} = call -> finalize_call(call, "room_finished")
+    end
+  end
+
+  @doc """
+  Handles a `participant_left` webhook from LiveKit. Flips the participant
+  status to `left` and finalizes the call when there is no one active left.
+  """
+  @spec handle_participant_left(String.t(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
+  def handle_participant_left(livekit_room, user_id)
+      when is_binary(livekit_room) and is_binary(user_id) do
+    case Repo.get_by(Call, livekit_room: livekit_room) do
+      nil -> {:error, :not_found}
+      %Call{} = call -> end_call(call.id, user_id)
+    end
+  end
+
   defp fetch_call(call_id) do
     case Repo.get(Call, call_id) do
       nil -> {:error, :call_not_found}

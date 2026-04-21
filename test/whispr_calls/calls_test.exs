@@ -145,6 +145,46 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "handle_room_finished/1" do
+    test "marks a ringing call as ended with end_reason room_finished" do
+      {_initiator, _invitee, call} = seed_ringing_call()
+
+      expect(LiveKitClientMock, :delete_room, fn _room -> :ok end)
+
+      assert {:ok, updated} = Calls.handle_room_finished(call.livekit_room)
+      assert updated.status == "ended"
+      assert updated.end_reason == "room_finished"
+    end
+
+    test "is a no-op on an already ended call" do
+      {_initiator, _invitee, call} = seed_ringing_call()
+
+      {:ok, _} =
+        call
+        |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now(), end_reason: "test"})
+        |> Repo.update()
+
+      assert {:ok, refreshed} = Calls.handle_room_finished(call.livekit_room)
+      assert refreshed.status == "ended"
+      assert refreshed.end_reason == "test"
+    end
+
+    test "returns :not_found when room does not exist" do
+      assert {:error, :not_found} = Calls.handle_room_finished("call_nope")
+    end
+  end
+
+  describe "handle_participant_left/2" do
+    test "marks the matching participant as left" do
+      {initiator, _invitee, call} = seed_connected_call()
+
+      assert {:ok, _} = Calls.handle_participant_left(call.livekit_room, initiator)
+
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: initiator)
+      assert participant.status == "left"
+    end
+  end
+
   defp seed_ringing_call_for(user_id) do
     invitee = Ecto.UUID.generate()
     now = DateTime.utc_now()
