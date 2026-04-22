@@ -141,6 +141,47 @@ defmodule WhisprCalls.CallsTest do
     test "returns :not_invited for non-participant", %{call: call} do
       assert {:error, :not_invited} = Calls.end_call(call.id, Ecto.UUID.generate())
     end
+
+    test "is a no-op when called a second time after the call is already ended",
+         %{initiator: initiator, invitee: invitee, call: call} do
+      # First end: initiator leaves then invitee (last one) ends the call.
+      assert {:ok, _} = Calls.end_call(call.id, initiator)
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
+      assert {:ok, ended} = Calls.end_call(call.id, invitee)
+      assert ended.status == "ended"
+
+      # Second end from initiator must not re-delete the room or re-publish
+      # an event; we do NOT set another expectation on delete_room.
+      assert {:ok, still_ended} = Calls.end_call(call.id, initiator)
+      assert still_ended.status == "ended"
+    end
+  end
+
+  describe "accept_call/2 on an already-ended call" do
+    test "returns :call_already_ended" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      {:ok, _} =
+        call
+        |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now()})
+        |> Repo.update()
+
+      assert {:error, :call_already_ended} = Calls.accept_call(call.id, invitee)
+    end
+  end
+
+  describe "decline_call/2 on an already-ended call" do
+    test "is a no-op" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      {:ok, ended} =
+        call
+        |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now()})
+        |> Repo.update()
+
+      assert {:ok, returned} = Calls.decline_call(ended.id, invitee)
+      assert returned.status == "ended"
+    end
   end
 
   describe "list_user_calls/2" do
