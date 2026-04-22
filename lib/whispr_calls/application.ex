@@ -7,25 +7,38 @@ defmodule WhisprCalls.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      WhisprCallsWeb.Telemetry,
-      WhisprCalls.Repo,
-      {DNSCluster, query: Application.get_env(:whispr_calls, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: WhisprCalls.PubSub},
-      {Redix,
-       {Application.get_env(:whispr_calls, :redis_url, "redis://localhost:6379"), [name: :redix]}},
-      # PromEx metrics collector (Prometheus scrape at /metrics via plug).
-      WhisprCalls.PromEx,
-      # Periodic worker that expires stale ringing calls (30s timeout).
-      WhisprCalls.Workers.RingingTimeoutWorker,
-      # Start to serve requests, typically the last entry
-      WhisprCallsWeb.Endpoint
-    ]
+    children =
+      [
+        WhisprCallsWeb.Telemetry,
+        WhisprCalls.Repo,
+        {DNSCluster, query: Application.get_env(:whispr_calls, :dns_cluster_query) || :ignore},
+        {Phoenix.PubSub, name: WhisprCalls.PubSub},
+        {Redix,
+         {Application.get_env(:whispr_calls, :redis_url, "redis://localhost:6379"),
+          [name: :redix]}},
+        # PromEx metrics collector (Prometheus scrape at /metrics via plug).
+        WhisprCalls.PromEx
+      ] ++
+        workers() ++
+        [
+          # Start to serve requests, typically the last entry
+          WhisprCallsWeb.Endpoint
+        ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: WhisprCalls.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  # Background workers are skipped in :test so the SQL sandbox doesn't fight
+  # with a ticking worker that would check out connections on its own.
+  defp workers do
+    if Application.get_env(:whispr_calls, :start_background_workers?, true) do
+      [WhisprCalls.Workers.RingingTimeoutWorker]
+    else
+      []
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration

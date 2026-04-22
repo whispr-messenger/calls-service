@@ -26,6 +26,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
   secret_key_base: "krMz6zrvCKT7XekiNeN2CPCh9YR3NHlf2a7gD9/R76gdsIzGCH1x2SirLzARJ3oJ",
   server: false
 
+# Skip the ringing-timeout worker under test: the SQL sandbox ownership
+# model doesn't play well with a GenServer checking out its own connection
+# on a 5s tick. Worker behaviour is covered directly in unit tests.
+config :whispr_calls, start_background_workers?: false
+
 # JWT signer used by authenticate plug in test env.
 # Stored as {algorithm, secret} and materialised into a Joken.Signer lazily
 # (Joken is not loaded at config-compile time).
