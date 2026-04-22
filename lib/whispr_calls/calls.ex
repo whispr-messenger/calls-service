@@ -347,7 +347,11 @@ defmodule WhisprCalls.Calls do
     Application.get_env(:whispr_calls, :livekit_public_url, "wss://livekit.whispr.local")
   end
 
-  # Stub until messaging-service gRPC client lands. Returns {:ok, :member}
-  # unconditionally so the happy path works end-to-end in tests and dev.
-  defp verify_conversation_membership(_user_id, _conversation_id), do: {:ok, :member}
+  # Delegates to the configured messaging client to check whether the user
+  # actually belongs to the conversation. In tests / dev the Stub returns
+  # `{:ok, :member}` unconditionally; in prod the HTTP fallback (or, later,
+  # the gRPC client) hits messaging-service.
+  defp verify_conversation_membership(user_id, conversation_id) do
+    WhisprCalls.Grpc.MessagingClient.verify_membership(conversation_id, user_id)
+  end
 end

@@ -35,6 +35,35 @@ defmodule WhisprCalls.CallsTest do
       assert Enum.any?(participants, &(&1.user_id == initiator and &1.status == "joined"))
       assert Enum.any?(participants, &(&1.user_id == other and &1.status == "invited"))
     end
+
+    test "returns :not_member when messaging-service rejects the initiator" do
+      Application.put_env(
+        :whispr_calls,
+        :messaging_client,
+        WhisprCalls.Grpc.MessagingClientMock
+      )
+
+      on_exit(fn ->
+        Application.put_env(
+          :whispr_calls,
+          :messaging_client,
+          WhisprCalls.Grpc.MessagingClient.Stub
+        )
+      end)
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :verify_membership, fn _conv, _user ->
+        {:error, :not_member}
+      end)
+
+      assert {:error, :not_member} =
+               Calls.initiate_call(Ecto.UUID.generate(), Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: []
+               })
+
+      # No call was created and no LiveKit interaction happened.
+      assert Repo.all(Call) == []
+    end
   end
 
   describe "accept_call/2" do
