@@ -23,6 +23,20 @@ end
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Redis connection URL: prefer a full REDIS_URL, otherwise compose REDIS_HOST
+# + REDIS_PORT (used by the docker test stack and the Kubernetes manifests).
+config :whispr_calls,
+  redis_url:
+    System.get_env("REDIS_URL") ||
+      "redis://#{System.get_env("REDIS_HOST", "localhost")}:#{System.get_env("REDIS_PORT", "6379")}"
+
+# LiveKit webhook secret (HMAC verification on /calls/webhooks/livekit).
+# When unset, signature verification is skipped so dev environments keep
+# working. Set this in preprod/prod once the webhook is provisioned.
+if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
+  config :whispr_calls, livekit_webhook_secret: secret
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
