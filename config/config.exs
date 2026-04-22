@@ -11,6 +11,14 @@ config :whispr_calls,
   ecto_repos: [WhisprCalls.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
+# PromEx: we only run the plug-backed /metrics endpoint, dashboards and the
+# standalone metrics HTTP server are disabled.
+config :whispr_calls, WhisprCalls.PromEx,
+  manual_metrics_start_delay: :no_delay,
+  drop_metrics_groups: [],
+  grafana: :disabled,
+  metrics_server: :disabled
+
 # Configure the endpoint
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   url: [host: "localhost"],

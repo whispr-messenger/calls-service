@@ -41,6 +41,9 @@ defmodule WhisprCallsWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # Exposes /metrics for Prometheus scraping.
+  plug PromEx.Plug, prom_ex_module: WhisprCalls.PromEx
+
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
