@@ -12,6 +12,7 @@ defmodule WhisprCalls.Calls do
   alias Ecto.Multi
   alias WhisprCalls.Calls.{Call, CallParticipant, LiveKitClient}
   alias WhisprCalls.Events.Publisher
+  alias WhisprCalls.Grpc.MessagingClient
   alias WhisprCalls.Repo
 
   @type uuid :: String.t()
@@ -352,6 +353,6 @@ defmodule WhisprCalls.Calls do
   # `{:ok, :member}` unconditionally; in prod the HTTP fallback (or, later,
   # the gRPC client) hits messaging-service.
   defp verify_conversation_membership(user_id, conversation_id) do
-    WhisprCalls.Grpc.MessagingClient.verify_membership(conversation_id, user_id)
+    MessagingClient.verify_membership(conversation_id, user_id)
   end
 end
