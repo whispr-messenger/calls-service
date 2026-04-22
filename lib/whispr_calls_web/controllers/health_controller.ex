@@ -6,6 +6,8 @@ defmodule WhisprCallsWeb.HealthController do
   """
   use WhisprCallsWeb, :controller
 
+  alias Ecto.Adapters.SQL, as: EctoSQL
+
   def live(conn, _params), do: json(conn, %{status: "ok"})
 
   def ready(conn, _params) do
@@ -22,7 +24,7 @@ defmodule WhisprCallsWeb.HealthController do
   end
 
   defp check_db do
-    case Ecto.Adapters.SQL.query(WhisprCalls.Repo, "SELECT 1") do
+    case EctoSQL.query(WhisprCalls.Repo, "SELECT 1") do
       {:ok, _} -> :ok
       {:error, _} -> :error
     end

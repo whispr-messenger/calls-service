@@ -1,8 +1,8 @@
 defmodule WhisprCallsWeb.CallChannelTest do
   use WhisprCallsWeb.ChannelCase, async: false
   import Mox
-  alias WhisprCallsWeb.UserSocket
   alias WhisprCalls.Calls.LiveKitClientMock
+  alias WhisprCallsWeb.UserSocket
 
   setup :verify_on_exit!
 
