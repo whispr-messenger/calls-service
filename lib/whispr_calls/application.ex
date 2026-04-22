@@ -14,6 +14,8 @@ defmodule WhisprCalls.Application do
       {Phoenix.PubSub, name: WhisprCalls.PubSub},
       {Redix,
        {Application.get_env(:whispr_calls, :redis_url, "redis://localhost:6379"), [name: :redix]}},
+      # Periodic worker that expires stale ringing calls (30s timeout).
+      WhisprCalls.Workers.RingingTimeoutWorker,
       # Start to serve requests, typically the last entry
       WhisprCallsWeb.Endpoint
     ]
