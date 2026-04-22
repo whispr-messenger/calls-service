@@ -27,6 +27,9 @@ defmodule WhisprCallsWeb.FallbackController do
   def call(conn, {:error, :already_joined_or_declined}),
     do: conn |> put_status(409) |> json(%{error: "already_resolved"})
 
+  def call(conn, {:error, :call_already_ended}),
+    do: conn |> put_status(409) |> json(%{error: "call_already_ended"})
+
   def call(conn, {:error, :invalid_request}),
     do: conn |> put_status(422) |> json(%{error: "invalid_request"})
 

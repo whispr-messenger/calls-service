@@ -55,9 +55,10 @@ defmodule WhisprCalls.Calls do
   """
   @spec accept_call(uuid(), uuid()) ::
           {:ok, Call.t(), %{token: String.t(), url: String.t()}}
-          | {:error, :not_invited | :call_not_found | term()}
+          | {:error, :not_invited | :call_not_found | :call_already_ended | term()}
   def accept_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_call_active(call),
          {:ok, participant} <- fetch_participant(call_id, user_id),
          {:ok, %{call: updated_call}} <- mark_participant_joined(call, participant),
          {:ok, token} <- LiveKitClient.generate_access_token(user_id, call.livekit_room, []) do
@@ -74,6 +75,11 @@ defmodule WhisprCalls.Calls do
     end
   end
 
+  defp ensure_call_active(%Call{status: status}) when status in ["ended", "missed", "declined"],
+    do: {:error, :call_already_ended}
+
+  defp ensure_call_active(_), do: :ok
+
   @doc """
   Declines a ringing call: flips the participant status to `declined`.
   Publishes a Redis event so the initiator gets notified.
@@ -81,8 +87,16 @@ defmodule WhisprCalls.Calls do
   @spec decline_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def decline_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id),
-         {:ok, _updated} <-
+         {:ok, participant} <- fetch_participant(call_id, user_id) do
+      finalize_decline(call, participant, user_id)
+    end
+  end
+
+  # Declining an already-ended call is a no-op.
+  defp finalize_decline(%Call{status: "ended"} = call, _participant, _user_id), do: {:ok, call}
+
+  defp finalize_decline(%Call{} = call, %CallParticipant{} = participant, user_id) do
+    with {:ok, _updated} <-
            participant
            |> CallParticipant.changeset(%{status: "declined"})
            |> Repo.update() do
@@ -105,8 +119,18 @@ defmodule WhisprCalls.Calls do
   @spec end_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def end_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id),
-         {:ok, _updated} <-
+         {:ok, participant} <- fetch_participant(call_id, user_id) do
+      finalize_end_call(call, participant)
+    end
+  end
+
+  # Calling end_call on an already-ended call is a no-op: participant status
+  # is preserved, no additional Redis event is published and the LiveKit room
+  # is not re-deleted.
+  defp finalize_end_call(%Call{status: "ended"} = call, _participant), do: {:ok, call}
+
+  defp finalize_end_call(%Call{} = call, %CallParticipant{} = participant) do
+    with {:ok, _updated} <-
            participant
            |> CallParticipant.changeset(%{status: "left", left_at: DateTime.utc_now()})
            |> Repo.update() do
