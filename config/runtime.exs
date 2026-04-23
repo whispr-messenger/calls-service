@@ -37,6 +37,29 @@ if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
   config :whispr_calls, livekit_webhook_secret: secret
 end
 
+# LiveKit API credentials + SFU URL consumed by
+# `WhisprCalls.Calls.LiveKitClientHTTP` (create_room / delete_room / token
+# generation). Without these the controller raises `ArgumentError` on the
+# first authenticated POST /calls.
+if key = System.get_env("LIVEKIT_API_KEY") do
+  config :whispr_calls, livekit_api_key: key
+end
+
+if secret = System.get_env("LIVEKIT_API_SECRET") do
+  config :whispr_calls, livekit_api_secret: secret
+end
+
+if url = System.get_env("LIVEKIT_API_URL") do
+  config :whispr_calls, livekit_api_url: url
+end
+
+# Public WSS URL returned to clients in `create_call`. Defaults to the
+# placeholder `wss://livekit.whispr.local` when unset; set this so mobile
+# clients can reach the SFU.
+if public_url = System.get_env("LIVEKIT_PUBLIC_URL") do
+  config :whispr_calls, livekit_public_url: public_url
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
