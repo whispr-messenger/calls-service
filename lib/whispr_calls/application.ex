@@ -19,6 +19,7 @@ defmodule WhisprCalls.Application do
         # PromEx metrics collector (Prometheus scrape at /metrics via plug).
         WhisprCalls.PromEx
       ] ++
+        jwks_children() ++
         workers() ++
         [
           # Start to serve requests, typically the last entry
@@ -38,6 +39,16 @@ defmodule WhisprCalls.Application do
       [WhisprCalls.Workers.RingingTimeoutWorker]
     else
       []
+    end
+  end
+
+  # JwksStrategy is a JokenJwks GenServer that caches the auth-service public
+  # keys. Only start it when the authenticate plug actually points at it
+  # (prod). In test/dev the signer is an inline HS256 secret.
+  defp jwks_children do
+    case Application.get_env(:whispr_calls, :jwt_signer) do
+      WhisprCalls.JwksStrategy -> [WhisprCalls.JwksStrategy]
+      _ -> []
     end
   end
 
