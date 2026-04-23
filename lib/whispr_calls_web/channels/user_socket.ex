@@ -37,7 +37,9 @@ defmodule WhisprCallsWeb.UserSocket do
         Joken.verify_and_validate(%{}, token, signer)
 
       strategy when is_atom(strategy) ->
-        Joken.verify_and_validate(%{}, token, nil, %{}, [strategy])
+        # See WhisprCallsWeb.Plugs.Authenticate for why we wrap the strategy
+        # in the `JokenJwks` hook tuple rather than passing it directly.
+        Joken.verify_and_validate(%{}, token, nil, %{}, [{JokenJwks, strategy: strategy}])
     end
   end
 end

@@ -60,6 +60,10 @@ defmodule WhisprCalls.MixProject do
       {:redix, "~> 1.5"},
       {:joken, "~> 2.6"},
       {:joken_jwks, "~> 1.6"},
+      # HTTP adapter backing Tesla — joken_jwks uses Tesla to fetch the
+      # auth-service JWKS. Without a concrete adapter Tesla falls back to
+      # :httpc which doesn't honour our SSL config consistently.
+      {:hackney, "~> 1.20"},
       {:req, "~> 0.5"},
       {:oban, "~> 2.17"},
       {:prom_ex, "~> 1.11"},
