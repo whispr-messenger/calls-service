@@ -137,17 +137,20 @@ jobs:
           echo "Updating deployment image to: ${FULL_IMAGE}"
 
           if [ "$TRIGGER_BRANCH" = "main" ]; then
-            # Update all three directories on main
-            echo "Updating prod, production, and preprod manifests..."
+            # Update manifests in any of prod, production, preprod that exist
+            # (calls-service may only be deployed in preprod initially).
+            echo "Updating available manifests..."
 
-            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/prod/calls-service/deployment.yaml
-            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/production/calls-service/deployment.yaml
-            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/deployment.yaml
-
-            # Update migration-job only if it exists
-            for DIR in prod preprod; do
+            for DIR in prod production preprod; do
+              if [ -f "k8s/whispr/${DIR}/calls-service/deployment.yaml" ]; then
+                yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' "k8s/whispr/${DIR}/calls-service/deployment.yaml"
+                echo "Updated k8s/whispr/${DIR}/calls-service/deployment.yaml"
+              else
+                echo "Skipping k8s/whispr/${DIR}/calls-service/deployment.yaml (not present)"
+              fi
               if [ -f "k8s/whispr/${DIR}/calls-service/migration-job.yaml" ]; then
                 yq -i 'select(.kind == "Job").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' "k8s/whispr/${DIR}/calls-service/migration-job.yaml"
+                echo "Updated k8s/whispr/${DIR}/calls-service/migration-job.yaml"
               fi
             done
           else
@@ -164,27 +167,16 @@ jobs:
         run: |
           TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
 
-          if [ "$TRIGGER_BRANCH" = "main" ]; then
-            echo "=== prod deployment ==="
-            yq '.spec.template.spec.containers[0].image' k8s/whispr/prod/calls-service/deployment.yaml
-            echo "=== production deployment ==="
-            yq '.spec.template.spec.containers[0].image' k8s/whispr/production/calls-service/deployment.yaml
-            echo "=== preprod deployment ==="
-            yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/deployment.yaml
-            echo "=== prod migration-job ==="
-            if [ -f k8s/whispr/prod/calls-service/migration-job.yaml ]; then
-              yq '.spec.template.spec.containers[0].image' k8s/whispr/prod/calls-service/migration-job.yaml
-            else
-              echo "No migration-job in prod"
+          for DIR in prod production preprod; do
+            if [ -f "k8s/whispr/${DIR}/calls-service/deployment.yaml" ]; then
+              echo "=== ${DIR} deployment ==="
+              yq '.spec.template.spec.containers[0].image' "k8s/whispr/${DIR}/calls-service/deployment.yaml"
             fi
-            if [ -f k8s/whispr/preprod/calls-service/migration-job.yaml ]; then
-              echo "=== preprod migration-job ==="
-              yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/migration-job.yaml
+            if [ -f "k8s/whispr/${DIR}/calls-service/migration-job.yaml" ]; then
+              echo "=== ${DIR} migration-job ==="
+              yq '.spec.template.spec.containers[0].image' "k8s/whispr/${DIR}/calls-service/migration-job.yaml"
             fi
-          else
-            echo "=== preprod deployment ==="
-            yq '.spec.template.spec.containers[0].image' k8s/whispr/preprod/calls-service/deployment.yaml
-          fi
+          done
 
       - name: Commit and push changes
         run: |
@@ -194,11 +186,22 @@ jobs:
           TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
           INFRA_BRANCH="${{ steps.branch_info.outputs.infra_branch }}"
 
-          # Determine which files to check and add
+          # Collect only files that actually exist (some envs may not be bootstrapped yet)
           if [ "$TRIGGER_BRANCH" = "main" ]; then
-            FILES_TO_ADD="k8s/whispr/prod/calls-service/deployment.yaml k8s/whispr/production/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/deployment.yaml"
+            CANDIDATES="k8s/whispr/prod/calls-service/deployment.yaml k8s/whispr/prod/calls-service/migration-job.yaml k8s/whispr/production/calls-service/deployment.yaml k8s/whispr/production/calls-service/migration-job.yaml k8s/whispr/preprod/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/migration-job.yaml"
           else
-            FILES_TO_ADD="k8s/whispr/preprod/calls-service/deployment.yaml"
+            CANDIDATES="k8s/whispr/preprod/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/migration-job.yaml"
+          fi
+          FILES_TO_ADD=""
+          for f in $CANDIDATES; do
+            if [ -f "$f" ]; then
+              FILES_TO_ADD="$FILES_TO_ADD $f"
+            fi
+          done
+
+          if [ -z "$FILES_TO_ADD" ]; then
+            echo "No target manifest files found"
+            exit 0
           fi
 
           # Check if there are changes to commit
