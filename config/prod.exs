@@ -15,5 +15,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
 # Do not print debug messages in production
 config :logger, level: :info
 
+# Use the JWKS strategy to verify tokens issued by the auth-service in prod.
+# The JwksStrategy module must be started in the supervision tree (see
+# WhisprCalls.Application); this line just tells the Authenticate plug and
+# the user socket which signer to pick at verify-time.
+config :whispr_calls, :jwt_signer, WhisprCalls.JwksStrategy
+
 # Runtime production configuration, including reading
 # of environment variables, is done on config/runtime.exs.
