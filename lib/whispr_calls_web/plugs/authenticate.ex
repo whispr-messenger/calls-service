@@ -41,7 +41,13 @@ defmodule WhisprCallsWeb.Plugs.Authenticate do
 
       strategy when is_atom(strategy) ->
         # JWKS-backed strategy module (e.g. WhisprCalls.JwksStrategy).
-        Joken.verify_and_validate(%{}, token, nil, %{}, [strategy])
+        # JokenJwks.DefaultStrategyTemplate generates a `JokenJwks` hook that
+        # reads the JWT's `kid` header, asks the strategy for the matching
+        # signer (in-memory ETS cache fed by the supervised GenServer) and
+        # injects it into Joken. The hook takes the strategy as an option —
+        # passing the bare strategy module would hit
+        # `before_verify/2 is undefined or private` at runtime.
+        Joken.verify_and_validate(%{}, token, nil, %{}, [{JokenJwks, strategy: strategy}])
     end
   end
 
