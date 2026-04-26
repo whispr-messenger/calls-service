@@ -458,11 +458,10 @@ defmodule WhisprCalls.CallsTest do
       {:ok, _} = Redix.command(:redix, ["SADD", key, initiator, invitee])
       assert {:ok, 2} = Redix.command(:redix, ["SCARD", key])
 
-      # Both participants leave; the second `end_call` triggers finalize_call,
-      # which must DEL the set.
-      assert {:ok, _} = Calls.end_call(call.id, invitee)
+      # 1v1 call: the first `end_call` finalizes immediately (peer_left),
+      # which DELs the Redis set and calls delete_room on LiveKit.
       expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
-      assert {:ok, _} = Calls.end_call(call.id, initiator)
+      assert {:ok, _} = Calls.end_call(call.id, invitee)
 
       assert {:ok, 0} = Redix.command(:redix, ["EXISTS", key])
     end
