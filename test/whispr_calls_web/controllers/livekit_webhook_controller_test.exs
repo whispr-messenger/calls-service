@@ -117,4 +117,42 @@ defmodule WhisprCallsWeb.LiveKitWebhookControllerTest do
       assert response(resp, 401)
     end
   end
+
+  describe "fail-closed when secret is missing in prod" do
+    setup do
+      previous_env = Application.get_env(:whispr_calls, :env)
+      previous_secret = Application.get_env(:whispr_calls, :livekit_webhook_secret)
+
+      Application.put_env(:whispr_calls, :env, :prod)
+      Application.delete_env(:whispr_calls, :livekit_webhook_secret)
+
+      on_exit(fn ->
+        if previous_env == nil do
+          Application.delete_env(:whispr_calls, :env)
+        else
+          Application.put_env(:whispr_calls, :env, previous_env)
+        end
+
+        if previous_secret == nil do
+          Application.delete_env(:whispr_calls, :livekit_webhook_secret)
+        else
+          Application.put_env(:whispr_calls, :livekit_webhook_secret, previous_secret)
+        end
+      end)
+
+      :ok
+    end
+
+    test "returns 503 when no secret is configured in prod", %{conn: conn} do
+      resp = post(conn, "/calls/webhooks/livekit", %{"event" => "unknown"})
+      assert response(resp, 503)
+    end
+
+    test "returns 503 when the secret is empty in prod", %{conn: conn} do
+      Application.put_env(:whispr_calls, :livekit_webhook_secret, "")
+
+      resp = post(conn, "/calls/webhooks/livekit", %{"event" => "unknown"})
+      assert response(resp, 503)
+    end
+  end
 end

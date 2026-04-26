@@ -20,6 +20,11 @@ if System.get_env("PHX_SERVER") do
   config :whispr_calls, WhisprCallsWeb.Endpoint, server: true
 end
 
+# Mirror the compile-time env into application config so runtime code
+# (e.g. fail-closed checks in controllers) can branch on it without
+# pulling Mix at runtime.
+config :whispr_calls, env: config_env()
+
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
@@ -31,10 +36,21 @@ config :whispr_calls,
       "redis://#{System.get_env("REDIS_HOST", "localhost")}:#{System.get_env("REDIS_PORT", "6379")}"
 
 # LiveKit webhook secret (HMAC verification on /calls/webhooks/livekit).
-# When unset, signature verification is skipped so dev environments keep
-# working. Set this in preprod/prod once the webhook is provisioned.
-if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
-  config :whispr_calls, livekit_webhook_secret: secret
+# Required in prod (the controller fails-closed with 503 when missing);
+# optional in dev/test for convenience.
+if config_env() == :prod do
+  config :whispr_calls,
+    livekit_webhook_secret:
+      System.get_env("LIVEKIT_WEBHOOK_SECRET") ||
+        raise("""
+        environment variable LIVEKIT_WEBHOOK_SECRET is missing.
+        It must match the webhook secret configured on the LiveKit server
+        so we can verify signed webhooks instead of accepting spoofed events.
+        """)
+else
+  if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
+    config :whispr_calls, livekit_webhook_secret: secret
+  end
 end
 
 # LiveKit API credentials + SFU URL consumed by
