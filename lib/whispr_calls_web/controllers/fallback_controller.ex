@@ -24,6 +24,9 @@ defmodule WhisprCallsWeb.FallbackController do
   def call(conn, {:error, :not_member}),
     do: conn |> put_status(403) |> json(%{error: "not_member"})
 
+  def call(conn, {:error, :invitee_not_member}),
+    do: conn |> put_status(403) |> json(%{error: "invitee_not_member"})
+
   def call(conn, {:error, :already_joined_or_declined}),
     do: conn |> put_status(409) |> json(%{error: "already_resolved"})
 
