@@ -171,7 +171,7 @@ defmodule WhisprCalls.CallsTest do
   end
 
   describe "decline_call/2 on an already-ended call" do
-    test "is a no-op" do
+    test "returns :call_already_ended" do
       {_initiator, invitee, call} = seed_ringing_call()
 
       {:ok, ended} =
@@ -179,8 +179,101 @@ defmodule WhisprCalls.CallsTest do
         |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now()})
         |> Repo.update()
 
-      assert {:ok, returned} = Calls.decline_call(ended.id, invitee)
-      assert returned.status == "ended"
+      assert {:error, :call_already_ended} = Calls.decline_call(ended.id, invitee)
+    end
+  end
+
+  describe "accept_call/2 status guards" do
+    test "returns :call_not_ringing when call is already connected" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      {:ok, _} =
+        call
+        |> Call.changeset(%{status: "connected", connected_at: DateTime.utc_now()})
+        |> Repo.update()
+
+      assert {:error, :call_not_ringing} = Calls.accept_call(call.id, invitee)
+    end
+
+    test "returns :participant_not_invited when participant already declined" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: invitee)
+
+      {:ok, _} =
+        participant
+        |> CallParticipant.changeset(%{status: "declined"})
+        |> Repo.update()
+
+      assert {:error, :participant_not_invited} = Calls.accept_call(call.id, invitee)
+    end
+
+    test "returns :participant_not_invited when initiator (already joined) tries to accept" do
+      {initiator, _invitee, call} = seed_ringing_call()
+
+      assert {:error, :participant_not_invited} = Calls.accept_call(call.id, initiator)
+    end
+
+    test "second accept errors after a successful first accept" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      expect(LiveKitClientMock, :generate_access_token, fn ^invitee, _room, _opts ->
+        {:ok, "tok"}
+      end)
+
+      assert {:ok, _, _} = Calls.accept_call(call.id, invitee)
+      assert {:error, :call_not_ringing} = Calls.accept_call(call.id, invitee)
+    end
+  end
+
+  describe "decline_call/2 status guards" do
+    test "returns :call_not_ringing when call is already connected" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      {:ok, _} =
+        call
+        |> Call.changeset(%{status: "connected", connected_at: DateTime.utc_now()})
+        |> Repo.update()
+
+      assert {:error, :call_not_ringing} = Calls.decline_call(call.id, invitee)
+    end
+
+    test "returns :call_already_ended when call is missed" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      {:ok, _} =
+        call
+        |> Call.changeset(%{status: "missed"})
+        |> Repo.update()
+
+      assert {:error, :call_already_ended} = Calls.decline_call(call.id, invitee)
+    end
+
+    test "returns :participant_not_invited when participant already declined" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: invitee)
+
+      {:ok, _} =
+        participant
+        |> CallParticipant.changeset(%{status: "declined"})
+        |> Repo.update()
+
+      assert {:error, :participant_not_invited} = Calls.decline_call(call.id, invitee)
+    end
+
+    test "decline then accept errors" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      assert {:ok, _} = Calls.decline_call(call.id, invitee)
+      assert {:error, :participant_not_invited} = Calls.accept_call(call.id, invitee)
+    end
+
+    test "second decline errors after a successful first decline" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      assert {:ok, _} = Calls.decline_call(call.id, invitee)
+      assert {:error, :participant_not_invited} = Calls.decline_call(call.id, invitee)
     end
   end
 
