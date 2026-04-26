@@ -55,11 +55,18 @@ defmodule WhisprCalls.Calls do
   """
   @spec accept_call(uuid(), uuid()) ::
           {:ok, Call.t(), %{token: String.t(), url: String.t()}}
-          | {:error, :not_invited | :call_not_found | :call_already_ended | term()}
+          | {:error,
+             :not_invited
+             | :call_not_found
+             | :call_already_ended
+             | :call_not_ringing
+             | :participant_not_invited
+             | term()}
   def accept_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
-         :ok <- ensure_call_active(call),
+         :ok <- ensure_call_ringing(call),
          {:ok, participant} <- fetch_participant(call_id, user_id),
+         :ok <- ensure_participant_invited(participant),
          {:ok, %{call: updated_call}} <- mark_participant_joined(call, participant),
          {:ok, token} <- LiveKitClient.generate_access_token(user_id, call.livekit_room, []) do
       track_active_participant(updated_call, user_id)
@@ -75,10 +82,20 @@ defmodule WhisprCalls.Calls do
     end
   end
 
-  defp ensure_call_active(%Call{status: status}) when status in ["ended", "missed", "declined"],
-    do: {:error, :call_already_ended}
+  # Only a ringing call can be accepted or declined. Already-terminal statuses
+  # (ended/missed/declined/failed) collapse to :call_already_ended so the
+  # controller maps them to 410 Gone semantics, while in-progress statuses
+  # (connected) yield :call_not_ringing for 409 Conflict.
+  defp ensure_call_ringing(%Call{status: "ringing"}), do: :ok
 
-  defp ensure_call_active(_), do: :ok
+  defp ensure_call_ringing(%Call{status: status})
+       when status in ["ended", "missed", "declined", "failed"],
+       do: {:error, :call_already_ended}
+
+  defp ensure_call_ringing(_), do: {:error, :call_not_ringing}
+
+  defp ensure_participant_invited(%CallParticipant{status: "invited"}), do: :ok
+  defp ensure_participant_invited(_), do: {:error, :participant_not_invited}
 
   @doc """
   Declines a ringing call: flips the participant status to `declined`.
@@ -87,13 +104,12 @@ defmodule WhisprCalls.Calls do
   @spec decline_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def decline_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id) do
+         :ok <- ensure_call_ringing(call),
+         {:ok, participant} <- fetch_participant(call_id, user_id),
+         :ok <- ensure_participant_invited(participant) do
       finalize_decline(call, participant, user_id)
     end
   end
-
-  # Declining an already-ended call is a no-op.
-  defp finalize_decline(%Call{status: "ended"} = call, _participant, _user_id), do: {:ok, call}
 
   defp finalize_decline(%Call{} = call, %CallParticipant{} = participant, user_id) do
     with {:ok, _updated} <-
