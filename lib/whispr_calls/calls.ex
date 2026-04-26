@@ -150,15 +150,25 @@ defmodule WhisprCalls.Calls do
            participant
            |> CallParticipant.changeset(%{status: "left", left_at: DateTime.utc_now()})
            |> Repo.update() do
+      _ = publish_participant_left(call, participant.user_id)
       finalize_or_continue(call)
     end
   end
 
+  # In a 1v1 call (initiator + 1 invitee), end the call as soon as ONE
+  # participant leaves. Otherwise (group call), keep the call alive until
+  # all active participants have left. This avoids the bug where peer B
+  # remains stuck on the LiveKit room after peer A hangs up.
   defp finalize_or_continue(%Call{} = call) do
-    if has_active_participants?(call.id) do
-      {:ok, call}
-    else
-      finalize_call(call, "all_left")
+    cond do
+      one_to_one?(call) and any_participant_left?(call.id) ->
+        finalize_call(call, "peer_left")
+
+      has_active_participants?(call.id) ->
+        {:ok, call}
+
+      true ->
+        finalize_call(call, "all_left")
     end
   end
 
@@ -167,6 +177,28 @@ defmodule WhisprCalls.Calls do
       from p in CallParticipant,
         where: p.call_id == ^call_id and p.status == "joined"
     )
+  end
+
+  defp any_participant_left?(call_id) do
+    Repo.exists?(
+      from p in CallParticipant,
+        where: p.call_id == ^call_id and p.status == "left"
+    )
+  end
+
+  defp one_to_one?(%Call{id: call_id, type: type}) when type in ["audio", "video"] do
+    Repo.aggregate(from(p in CallParticipant, where: p.call_id == ^call_id), :count) == 2
+  end
+
+  defp one_to_one?(_), do: false
+
+  defp publish_participant_left(%Call{} = call, user_id) do
+    Publisher.publish("whispr:calls:participant_left", %{
+      call_id: call.id,
+      conversation_id: call.conversation_id,
+      user_id: user_id,
+      left_at: DateTime.to_iso8601(DateTime.utc_now())
+    })
   end
 
   defp finalize_call(%Call{} = call, reason) do

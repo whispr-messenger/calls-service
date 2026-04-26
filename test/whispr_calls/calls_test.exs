@@ -119,41 +119,64 @@ defmodule WhisprCalls.CallsTest do
       %{initiator: initiator, invitee: invitee, call: call}
     end
 
-    test "marks last participant as left and ends the call + deletes room",
-         %{initiator: initiator, invitee: invitee, call: call} do
-      # invitee leaves first (non-last) - no room delete expected
-      assert {:ok, _} = Calls.end_call(call.id, invitee)
-      assert Repo.get!(Call, call.id).status == "connected"
-
-      # initiator leaves - last one, room gets deleted
+    test "1v1: ends the call as soon as the first peer leaves",
+         %{initiator: _initiator, invitee: invitee, call: call} do
       expect(LiveKitClientMock, :delete_room, fn _room -> :ok end)
 
-      assert {:ok, updated_call} = Calls.end_call(call.id, initiator)
+      assert {:ok, updated_call} = Calls.end_call(call.id, invitee)
       assert updated_call.status == "ended"
+      assert updated_call.end_reason == "peer_left"
       assert %DateTime{} = updated_call.ended_at
       assert is_integer(updated_call.duration_seconds)
       assert updated_call.duration_seconds >= 0
 
-      participants = Repo.all(CallParticipant)
-      assert Enum.all?(participants, &(&1.status == "left"))
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: invitee)
+      assert participant.status == "left"
     end
 
     test "returns :not_invited for non-participant", %{call: call} do
       assert {:error, :not_invited} = Calls.end_call(call.id, Ecto.UUID.generate())
     end
 
-    test "is a no-op when called a second time after the call is already ended",
+    test "1v1: second peer leaving after the call ended is a no-op",
          %{initiator: initiator, invitee: invitee, call: call} do
-      # First end: initiator leaves then invitee (last one) ends the call.
-      assert {:ok, _} = Calls.end_call(call.id, initiator)
+      # First leave already ends the 1v1 call and deletes the room.
       expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
       assert {:ok, ended} = Calls.end_call(call.id, invitee)
       assert ended.status == "ended"
 
-      # Second end from initiator must not re-delete the room or re-publish
-      # an event; we do NOT set another expectation on delete_room.
+      # Second leave from the initiator must not re-delete the room or
+      # re-publish an event; no additional delete_room expectation is set.
       assert {:ok, still_ended} = Calls.end_call(call.id, initiator)
       assert still_ended.status == "ended"
+    end
+
+    test "group call: stays connected until the last active participant leaves" do
+      {a, b, c, call} = seed_connected_group_call()
+
+      # First two leaves keep the call alive.
+      assert {:ok, _} = Calls.end_call(call.id, a)
+      assert Repo.get!(Call, call.id).status == "connected"
+
+      assert {:ok, _} = Calls.end_call(call.id, b)
+      assert Repo.get!(Call, call.id).status == "connected"
+
+      # Last active participant ends the call.
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
+      assert {:ok, ended} = Calls.end_call(call.id, c)
+      assert ended.status == "ended"
+      assert ended.end_reason == "all_left"
+    end
+
+    test "1v1: publishes whispr:calls:ended on the first peer leave",
+         %{invitee: invitee, call: call} do
+      WhisprCalls.Events.PublisherTestRecorder.subscribe()
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
+
+      assert {:ok, _ended} = Calls.end_call(call.id, invitee)
+
+      assert_receive {:published, "whispr:calls:participant_left", %{user_id: ^invitee}}, 500
+      assert_receive {:published, "whispr:calls:ended", %{end_reason: "peer_left"}}, 500
     end
   end
 
@@ -340,6 +363,8 @@ defmodule WhisprCalls.CallsTest do
   describe "handle_participant_left/2" do
     test "marks the matching participant as left" do
       {initiator, _invitee, call} = seed_connected_call()
+      # 1v1: first leave finalizes the call and deletes the LiveKit room.
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
 
       assert {:ok, _} = Calls.handle_participant_left(call.livekit_room, initiator)
 
@@ -437,6 +462,42 @@ defmodule WhisprCalls.CallsTest do
     ])
 
     {initiator, invitee, call}
+  end
+
+  # Seeds a 3-participant connected call (group call), all joined.
+  defp seed_connected_group_call do
+    a = Ecto.UUID.generate()
+    b = Ecto.UUID.generate()
+    c = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    {:ok, call} =
+      %Call{}
+      |> Call.changeset(%{
+        initiator_id: a,
+        conversation_id: Ecto.UUID.generate(),
+        type: "audio",
+        livekit_room: "call_" <> Ecto.UUID.generate(),
+        started_at: now,
+        connected_at: now,
+        status: "connected"
+      })
+      |> Repo.insert()
+
+    Repo.insert_all(
+      CallParticipant,
+      Enum.map([a, b, c], fn uid ->
+        %{
+          call_id: call.id,
+          user_id: uid,
+          status: "joined",
+          invited_at: now,
+          joined_at: now
+        }
+      end)
+    )
+
+    {a, b, c, call}
   end
 
   # Seeds a connected call with both users joined.
