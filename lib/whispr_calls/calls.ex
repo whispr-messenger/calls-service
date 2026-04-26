@@ -168,6 +168,7 @@ defmodule WhisprCalls.Calls do
       |> Repo.update()
 
     _ = LiveKitClient.delete_room(call.livekit_room)
+    _ = cleanup_active_participants(call)
 
     _ =
       Publisher.publish("whispr:calls:ended", %{
@@ -180,14 +181,34 @@ defmodule WhisprCalls.Calls do
     {:ok, updated}
   end
 
+  # The Redis set `calls:{room}:participants` is populated by
+  # `track_active_participant/2` on each accept. It's kept around for ad-hoc
+  # debugging (who is currently in the room) but the lifecycle is bounded:
+  # we drop the key here when the call is finalized so the keyspace doesn't
+  # grow forever.
+  defp cleanup_active_participants(%Call{livekit_room: room}) when is_binary(room) do
+    case Redix.command(:redix, ["DEL", "calls:#{room}:participants"]) do
+      {:ok, _} -> :ok
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp cleanup_active_participants(_), do: :ok
+
   @doc """
   Returns calls in which `user_id` is a participant. Supports optional
-  filters: `:status`, `:conversation_id`, `:limit` (default 50).
-  Ordered by `started_at` desc.
+  filters: `:status`, `:conversation_id`, `:limit` (default 50),
+  `:offset` (default 0). Ordered by `started_at` desc.
+
+  The controller is responsible for clamping `:limit` and `:offset` to
+  safe bounds before they reach this function.
   """
   @spec list_user_calls(uuid(), map()) :: [Call.t()]
   def list_user_calls(user_id, filters \\ %{}) do
     limit = Map.get(filters, :limit, 50)
+    offset = Map.get(filters, :offset, 0)
 
     query =
       from c in Call,
@@ -195,7 +216,8 @@ defmodule WhisprCalls.Calls do
         on: p.call_id == c.id,
         where: p.user_id == ^user_id,
         order_by: [desc: c.started_at],
-        limit: ^limit
+        limit: ^limit,
+        offset: ^offset
 
     query
     |> maybe_filter_status(filters)

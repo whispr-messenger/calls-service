@@ -81,15 +81,45 @@ defmodule WhisprCallsWeb.CallController do
 
   defp validate_uuid(_), do: {:error, :invalid_request}
 
+  # Pagination bounds. The list endpoint is exposed to mobile clients, so we
+  # never trust the raw `limit` / `offset` values: limit is clamped to
+  # [1, @max_limit] (default @default_limit) and offset to [0, @max_offset].
+  # Anything that doesn't parse as an integer is silently dropped and the
+  # default kicks in - we don't want a typo'd query param to 500 the client.
+  @default_limit 50
+  @max_limit 100
+  @max_offset 10_000
+
   defp normalize_filters(params) do
-    Enum.reduce([:status, :conversation_id, :limit], %{}, fn key, acc ->
-      case params[Atom.to_string(key)] do
-        nil -> acc
-        v when key == :limit and is_binary(v) -> Map.put(acc, :limit, String.to_integer(v))
-        v -> Map.put(acc, key, v)
-      end
-    end)
+    %{}
+    |> maybe_put_string(:status, params["status"])
+    |> maybe_put_string(:conversation_id, params["conversation_id"])
+    |> Map.put(:limit, parse_limit(params["limit"]))
+    |> Map.put(:offset, parse_offset(params["offset"]))
   end
+
+  defp maybe_put_string(acc, _key, nil), do: acc
+  defp maybe_put_string(acc, key, v) when is_binary(v), do: Map.put(acc, key, v)
+  defp maybe_put_string(acc, _key, _), do: acc
+
+  defp parse_limit(v), do: parse_int(v, @default_limit) |> clamp(1, @max_limit)
+  defp parse_offset(v), do: parse_int(v, 0) |> clamp(0, @max_offset)
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(v, default) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, ""} -> n
+      _ -> default
+    end
+  end
+
+  defp parse_int(v, _default) when is_integer(v), do: v
+  defp parse_int(_, default), do: default
+
+  defp clamp(n, min, _max) when n < min, do: min
+  defp clamp(n, _min, max) when n > max, do: max
+  defp clamp(n, _min, _max), do: n
 
   defp serialize(call) do
     %{

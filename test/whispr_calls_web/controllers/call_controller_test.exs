@@ -106,6 +106,45 @@ defmodule WhisprCallsWeb.CallControllerTest do
       resp = get(conn, "/calls/api/v1/calls")
       assert %{"data" => [_call]} = json_response(resp, 200)
     end
+
+    test "non-integer ?limit falls back to default and does not crash",
+         %{conn: conn, user_id: user_id} do
+      expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
+      expect(LiveKitClientMock, :generate_access_token, fn _, _, _ -> {:ok, "tok"} end)
+
+      {:ok, _call, _} =
+        WhisprCalls.Calls.initiate_call(user_id, Ecto.UUID.generate(), %{
+          type: "audio",
+          participant_ids: []
+        })
+
+      resp = get(conn, "/calls/api/v1/calls?limit=abc")
+      assert %{"data" => [_call]} = json_response(resp, 200)
+    end
+
+    test "huge ?limit is clamped to 100", %{conn: conn, user_id: user_id} do
+      seed_calls_for(user_id, 105)
+
+      resp = get(conn, "/calls/api/v1/calls?limit=99999")
+      %{"data" => calls} = json_response(resp, 200)
+      assert length(calls) == 100
+    end
+
+    test "?offset skips the first N results", %{conn: conn, user_id: user_id} do
+      # 5 calls, ordered by started_at desc by the context
+      [_c5, _c4, c3, c2, c1] = seed_calls_for(user_id, 5)
+
+      # No offset: full window
+      resp_all = get(conn, "/calls/api/v1/calls?limit=10")
+      %{"data" => all} = json_response(resp_all, 200)
+      assert length(all) == 5
+
+      # offset=2 skips the 2 most recent, returns the older 3
+      resp_off = get(conn, "/calls/api/v1/calls?limit=10&offset=2")
+      %{"data" => paged} = json_response(resp_off, 200)
+      paged_ids = Enum.map(paged, & &1["id"])
+      assert paged_ids == [c3.id, c2.id, c1.id]
+    end
   end
 
   defp build_valid_test_jwt(claims) do
@@ -113,5 +152,42 @@ defmodule WhisprCallsWeb.CallControllerTest do
     signer = Joken.Signer.create(alg, secret)
     {:ok, t, _} = Joken.encode_and_sign(claims, signer)
     t
+  end
+
+  # Inserts `count` calls owned by `user_id` directly into the DB so we don't
+  # have to mock LiveKit for each one. Returns the calls newest-first (same
+  # order the list endpoint returns).
+  defp seed_calls_for(user_id, count) do
+    base = DateTime.utc_now() |> DateTime.add(-count, :second)
+    alias WhisprCalls.Calls.{Call, CallParticipant}
+    alias WhisprCalls.Repo
+
+    for i <- 1..count do
+      started_at = DateTime.add(base, i, :second)
+
+      {:ok, call} =
+        %Call{}
+        |> Call.changeset(%{
+          initiator_id: user_id,
+          conversation_id: Ecto.UUID.generate(),
+          type: "audio",
+          livekit_room: "call_" <> Ecto.UUID.generate(),
+          started_at: started_at
+        })
+        |> Repo.insert()
+
+      Repo.insert_all(CallParticipant, [
+        %{
+          call_id: call.id,
+          user_id: user_id,
+          status: "joined",
+          invited_at: started_at,
+          joined_at: started_at
+        }
+      ])
+
+      call
+    end
+    |> Enum.reverse()
   end
 end

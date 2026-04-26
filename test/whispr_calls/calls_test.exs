@@ -255,6 +255,25 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "redis active-participants cleanup" do
+    test "finalize_call drops calls:{room}:participants in Redis" do
+      {initiator, invitee, call} = seed_connected_call()
+      key = "calls:#{call.livekit_room}:participants"
+
+      # Pre-populate the set the way `track_active_participant/2` would.
+      {:ok, _} = Redix.command(:redix, ["SADD", key, initiator, invitee])
+      assert {:ok, 2} = Redix.command(:redix, ["SCARD", key])
+
+      # Both participants leave; the second `end_call` triggers finalize_call,
+      # which must DEL the set.
+      assert {:ok, _} = Calls.end_call(call.id, invitee)
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
+      assert {:ok, _} = Calls.end_call(call.id, initiator)
+
+      assert {:ok, 0} = Redix.command(:redix, ["EXISTS", key])
+    end
+  end
+
   defp seed_ringing_call_for(user_id) do
     invitee = Ecto.UUID.generate()
     now = DateTime.utc_now()
