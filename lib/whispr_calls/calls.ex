@@ -30,6 +30,7 @@ defmodule WhisprCalls.Calls do
     participant_ids = Map.get(attrs, :participant_ids, [])
 
     with {:ok, :member} <- verify_conversation_membership(initiator_id, conversation_id),
+         :ok <- verify_invitees_are_members(conversation_id, participant_ids),
          room_name <- generate_room_name(),
          {:ok, _room} <- LiveKitClient.create_room(room_name, []),
          {:ok, %{call: call}} <-
@@ -448,5 +449,31 @@ defmodule WhisprCalls.Calls do
   # the gRPC client) hits messaging-service.
   defp verify_conversation_membership(user_id, conversation_id) do
     MessagingClient.verify_membership(conversation_id, user_id)
+  end
+
+  # Validates that every invited participant actually belongs to the
+  # conversation. Without this, a malicious client could make us ring users
+  # who never opted into the conversation.
+  #
+  # Uses a single `list_members/1` round-trip rather than N
+  # `verify_membership/2` calls. The Stub returns `{:ok, :any}` so dev/test
+  # short-circuit to `:ok` without inspecting member IDs.
+  defp verify_invitees_are_members(_conversation_id, []), do: :ok
+
+  defp verify_invitees_are_members(conversation_id, participant_ids) do
+    case MessagingClient.list_members(conversation_id) do
+      {:ok, :any} ->
+        :ok
+
+      {:ok, members} when is_list(members) ->
+        if MapSet.subset?(MapSet.new(participant_ids), MapSet.new(members)) do
+          :ok
+        else
+          {:error, :invitee_not_member}
+        end
+
+      {:error, _} ->
+        {:error, :invitee_not_member}
+    end
   end
 end

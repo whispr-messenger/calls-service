@@ -64,6 +64,82 @@ defmodule WhisprCalls.CallsTest do
       # No call was created and no LiveKit interaction happened.
       assert Repo.all(Call) == []
     end
+
+    test "succeeds when all invitees are members of the conversation" do
+      Application.put_env(
+        :whispr_calls,
+        :messaging_client,
+        WhisprCalls.Grpc.MessagingClientMock
+      )
+
+      on_exit(fn ->
+        Application.put_env(
+          :whispr_calls,
+          :messaging_client,
+          WhisprCalls.Grpc.MessagingClient.Stub
+        )
+      end)
+
+      initiator = Ecto.UUID.generate()
+      invitee_a = Ecto.UUID.generate()
+      invitee_b = Ecto.UUID.generate()
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :verify_membership, fn _conv, ^initiator ->
+        {:ok, :member}
+      end)
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :list_members, fn _conv ->
+        {:ok, [initiator, invitee_a, invitee_b]}
+      end)
+
+      expect(LiveKitClientMock, :create_room, fn _name, _opts -> {:ok, %{}} end)
+
+      expect(LiveKitClientMock, :generate_access_token, fn ^initiator, _room, _opts ->
+        {:ok, "lk_token"} end)
+
+      assert {:ok, _call, _tokens} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "video",
+                 participant_ids: [invitee_a, invitee_b]
+               })
+    end
+
+    test "returns :invitee_not_member when an invitee is NOT in the conversation" do
+      Application.put_env(
+        :whispr_calls,
+        :messaging_client,
+        WhisprCalls.Grpc.MessagingClientMock
+      )
+
+      on_exit(fn ->
+        Application.put_env(
+          :whispr_calls,
+          :messaging_client,
+          WhisprCalls.Grpc.MessagingClient.Stub
+        )
+      end)
+
+      initiator = Ecto.UUID.generate()
+      legit_invitee = Ecto.UUID.generate()
+      stranger = Ecto.UUID.generate()
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :verify_membership, fn _conv, ^initiator ->
+        {:ok, :member}
+      end)
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :list_members, fn _conv ->
+        {:ok, [initiator, legit_invitee]}
+      end)
+
+      assert {:error, :invitee_not_member} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: [legit_invitee, stranger]
+               })
+
+      # No call was created and no LiveKit interaction happened.
+      assert Repo.all(Call) == []
+    end
   end
 
   describe "accept_call/2" do
