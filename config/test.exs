@@ -41,6 +41,11 @@ config :whispr_calls, jwt_signer: {"HS256", "test_secret"}
 # embedded into the response so clients know where to connect.
 config :whispr_calls, livekit_public_url: "wss://livekit.test"
 
+# Use the in-process Stub for messaging-service membership checks in test.
+# Individual tests that want to assert the not-member path swap in
+# `WhisprCalls.Grpc.MessagingClientMock` (defined in test_helper.exs).
+config :whispr_calls, messaging_client: WhisprCalls.Grpc.MessagingClient.Stub
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

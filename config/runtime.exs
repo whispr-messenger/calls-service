@@ -158,4 +158,14 @@ if config_env() == :prod do
   # this at runtime.
   config :whispr_calls,
     jwks_url: System.fetch_env!("JWT_JWKS_URL")
+
+  # Wire the HTTP messaging client in prod so conversation-membership
+  # checks actually hit messaging-service. The default Stub returns
+  # `{:ok, :member}` unconditionally, which would let any authenticated
+  # user create a call in any conversation. fetch_env!/1 raises so the
+  # release fails fast at boot if the wiring is missing.
+  config :whispr_calls,
+    messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
+    messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
+    messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
 end

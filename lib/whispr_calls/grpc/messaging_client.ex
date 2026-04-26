@@ -63,10 +63,15 @@ defmodule WhisprCalls.Grpc.MessagingClient do
 
       url = "#{base}/messaging/api/v1/conversations/#{conversation_id}/members"
 
-      case Req.get(url,
-             headers: [{"authorization", "Bearer #{token}"}],
-             receive_timeout: 2_000
-           ) do
+      req_opts =
+        [
+          url: url,
+          headers: [{"authorization", "Bearer #{token}"}],
+          receive_timeout: 2_000
+        ]
+        |> Keyword.merge(Application.get_env(:whispr_calls, :messaging_http_req_options, []))
+
+      case Req.get(req_opts) do
         {:ok, %{status: 200, body: body}} ->
           if member_in_body?(body, user_id), do: {:ok, :member}, else: {:error, :not_member}
 
