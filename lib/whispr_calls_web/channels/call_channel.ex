@@ -19,7 +19,7 @@ defmodule WhisprCallsWeb.CallChannel do
   end
 
   @impl true
-  def handle_in("mute", %{"muted" => muted}, socket) do
+  def handle_in("mute", %{"muted" => muted}, socket) when is_boolean(muted) do
     broadcast!(socket, "participant_muted", %{
       user_id: socket.assigns.current_user_id,
       muted: muted
@@ -28,7 +28,11 @@ defmodule WhisprCallsWeb.CallChannel do
     {:noreply, socket}
   end
 
-  def handle_in("camera_off", %{"off" => off}, socket) do
+  def handle_in("mute", _payload, socket) do
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
+  end
+
+  def handle_in("camera_off", %{"off" => off}, socket) when is_boolean(off) do
     broadcast!(socket, "participant_camera_off", %{
       user_id: socket.assigns.current_user_id,
       off: off
@@ -36,4 +40,12 @@ defmodule WhisprCallsWeb.CallChannel do
 
     {:noreply, socket}
   end
+
+  def handle_in("camera_off", _payload, socket) do
+    {:reply, {:error, %{reason: "invalid_payload"}}, socket}
+  end
+
+  # Catch-all: an unknown event must not crash the channel process and
+  # disconnect the client. Silently ignore.
+  def handle_in(_event, _payload, socket), do: {:noreply, socket}
 end
