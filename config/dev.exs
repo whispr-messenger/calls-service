@@ -52,6 +52,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :whispr_calls, dev_routes: true
 
+# Use the in-process Stub for messaging-service membership checks in dev:
+# we don't always have a reachable messaging-service. Prod wires the HTTP
+# client in config/runtime.exs.
+config :whispr_calls, messaging_client: WhisprCalls.Grpc.MessagingClient.Stub
+
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 
