@@ -5,12 +5,14 @@ defmodule WhisprCallsWeb.LiveKitWebhookController do
 
   Signature verification: LiveKit signs webhook bodies as a JWT using the
   configured API secret. The token is sent in the `Authorization` header
-  and its `sha256` claim is the base64 digest of the raw body. When
-  `:livekit_webhook_secret` is set in the application env we verify the
-  JWT using the shared secret and reject unmatched bodies. When it is not
-  set (dev / early prod while WHISPR-1094 phase 7 rolls out) we accept
-  everything – this matches the behaviour before the verification was
-  implemented.
+  and its `sha256` claim is the base64 digest of the raw body. The shared
+  secret comes from `:livekit_webhook_secret` in the application env.
+
+  Fail-closed policy: in `:prod` we refuse the request with HTTP 503 if the
+  secret is missing or empty, so a misconfigured deployment cannot accept
+  spoofed `participant_left` / `room_finished` events. In `:dev` and
+  `:test` we keep accepting unsigned requests when the secret is unset for
+  developer convenience.
   """
   use WhisprCallsWeb, :controller
   alias WhisprCalls.Calls
@@ -26,6 +28,13 @@ defmodule WhisprCallsWeb.LiveKitWebhookController do
       {:error, :invalid_signature} ->
         send_resp(conn, 401, "")
 
+      {:error, :webhook_misconfigured} ->
+        Logger.error(
+          "livekit webhook rejected: LIVEKIT_WEBHOOK_SECRET is missing or empty in prod"
+        )
+
+        send_resp(conn, 503, "")
+
       {:error, reason} ->
         Logger.error("livekit webhook failed: #{inspect(reason)}")
         send_resp(conn, 500, "")
@@ -34,9 +43,15 @@ defmodule WhisprCallsWeb.LiveKitWebhookController do
 
   defp verify_signature(conn) do
     case Application.get_env(:whispr_calls, :livekit_webhook_secret) do
-      nil -> :ok
-      "" -> :ok
-      secret when is_binary(secret) -> verify_hmac(conn, secret)
+      secret when is_binary(secret) and secret != "" ->
+        verify_hmac(conn, secret)
+
+      _missing_or_empty ->
+        if Application.get_env(:whispr_calls, :env) == :prod do
+          {:error, :webhook_misconfigured}
+        else
+          :ok
+        end
     end
   end
 
