@@ -154,20 +154,14 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # JWKS URL used by the JWT authenticate plug to verify tokens issued by
-  # the auth-service. The strategy module (WhisprCalls.JwksStrategy) reads
-  # this at runtime.
-  config :whispr_calls,
-    jwks_url: System.fetch_env!("JWT_JWKS_URL")
-
-  # Wire the HTTP messaging client when the Phoenix server boots in prod so
-  # conversation-membership checks actually hit messaging-service. The
-  # default Stub returns `{:ok, :member}` unconditionally, which would let
-  # any authenticated user create a call in any conversation. Gated on
-  # PHX_SERVER so `eval` tasks (e.g. Release.migrate()) don't require
-  # these vars at boot.
+  # Web-server-only configuration: JWKS URL (consumed by the JWT plug on
+  # incoming HTTP requests) and the HTTP messaging client (used by the
+  # /calls controller for conversation membership checks). Gated on
+  # PHX_SERVER so `eval` tasks (e.g. Release.migrate()) running from the
+  # same image don't require these vars at boot.
   if System.get_env("PHX_SERVER") do
     config :whispr_calls,
+      jwks_url: System.fetch_env!("JWT_JWKS_URL"),
       messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
       messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
       messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
