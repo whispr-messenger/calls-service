@@ -36,9 +36,10 @@ config :whispr_calls,
       "redis://#{System.get_env("REDIS_HOST", "localhost")}:#{System.get_env("REDIS_PORT", "6379")}"
 
 # LiveKit webhook secret (HMAC verification on /calls/webhooks/livekit).
-# Required in prod (the controller fails-closed with 503 when missing);
-# optional in dev/test for convenience.
-if config_env() == :prod do
+# Required when the Phoenix server boots in prod (controller fails-closed
+# with 503 if missing). Skipped for `eval` tasks (e.g. Release.migrate()
+# which runs from the same image without PHX_SERVER set).
+if config_env() == :prod and System.get_env("PHX_SERVER") do
   config :whispr_calls,
     livekit_webhook_secret:
       System.get_env("LIVEKIT_WEBHOOK_SECRET") ||
@@ -159,13 +160,16 @@ if config_env() == :prod do
   config :whispr_calls,
     jwks_url: System.fetch_env!("JWT_JWKS_URL")
 
-  # Wire the HTTP messaging client in prod so conversation-membership
-  # checks actually hit messaging-service. The default Stub returns
-  # `{:ok, :member}` unconditionally, which would let any authenticated
-  # user create a call in any conversation. fetch_env!/1 raises so the
-  # release fails fast at boot if the wiring is missing.
-  config :whispr_calls,
-    messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
-    messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
-    messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
+  # Wire the HTTP messaging client when the Phoenix server boots in prod so
+  # conversation-membership checks actually hit messaging-service. The
+  # default Stub returns `{:ok, :member}` unconditionally, which would let
+  # any authenticated user create a call in any conversation. Gated on
+  # PHX_SERVER so `eval` tasks (e.g. Release.migrate()) don't require
+  # these vars at boot.
+  if System.get_env("PHX_SERVER") do
+    config :whispr_calls,
+      messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
+      messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
+      messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
+  end
 end
