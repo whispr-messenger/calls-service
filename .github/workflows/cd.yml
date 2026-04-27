@@ -215,9 +215,9 @@ jobs:
 
           # Build commit message based on trigger type
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            COMMIT_MSG="🔧 chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7} (manual trigger)"
+            COMMIT_MSG="chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7} (manual trigger)"
           else
-            COMMIT_MSG="🔧 chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7}"
+            COMMIT_MSG="chore(deploy/calls-service): update image to ${COMMIT_SHA:0:7}"
           fi
 
           git add $FILES_TO_ADD
