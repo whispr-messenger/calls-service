@@ -1,0 +1,17 @@
+{
+  "skip_files": [
+    "lib/whispr_calls/application.ex",
+    "lib/whispr_calls/release.ex",
+    "lib/whispr_calls/jwks_strategy.ex",
+    "lib/whispr_calls/prom_ex.ex",
+    "lib/whispr_calls/repo.ex",
+    "lib/whispr_calls/calls/livekit_client_http.ex",
+    "lib/whispr_calls_web/endpoint.ex",
+    "lib/whispr_calls_web/gettext.ex",
+    "lib/whispr_calls_web/telemetry.ex",
+    "test/support/.*"
+  ],
+  "coverage_options": {
+    "minimum_coverage": 0
+  }
+}
