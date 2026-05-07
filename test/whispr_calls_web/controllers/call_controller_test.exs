@@ -75,6 +75,68 @@ defmodule WhisprCallsWeb.CallControllerTest do
     end
   end
 
+  describe "POST /calls/:id/decline" do
+    test "204 when invitee declines a ringing call", %{conn: conn, user_id: callee} do
+      initiator = Ecto.UUID.generate()
+      expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
+      expect(LiveKitClientMock, :generate_access_token, fn _, _, _ -> {:ok, "tok"} end)
+
+      {:ok, call, _} =
+        WhisprCalls.Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+          type: "audio",
+          participant_ids: [callee]
+        })
+
+      resp = post(conn, "/calls/api/v1/calls/#{call.id}/decline")
+      assert response(resp, 204)
+    end
+  end
+
+  describe "GET /calls/:id" do
+    test "200 returns the serialized call when user is a participant",
+         %{conn: conn, user_id: user_id} do
+      expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
+      expect(LiveKitClientMock, :generate_access_token, fn _, _, _ -> {:ok, "tok"} end)
+
+      {:ok, call, _} =
+        WhisprCalls.Calls.initiate_call(user_id, Ecto.UUID.generate(), %{
+          type: "audio",
+          participant_ids: []
+        })
+
+      resp = get(conn, "/calls/api/v1/calls/#{call.id}")
+      assert %{"id" => id} = json_response(resp, 200)
+      assert id == call.id
+    end
+
+    test "404 when user is not a participant", %{conn: conn} do
+      stranger = Ecto.UUID.generate()
+      expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
+      expect(LiveKitClientMock, :generate_access_token, fn _, _, _ -> {:ok, "tok"} end)
+
+      {:ok, call, _} =
+        WhisprCalls.Calls.initiate_call(stranger, Ecto.UUID.generate(), %{
+          type: "audio",
+          participant_ids: []
+        })
+
+      resp = get(conn, "/calls/api/v1/calls/#{call.id}")
+      assert json_response(resp, 404)
+    end
+  end
+
+  describe "POST /calls invalid input" do
+    test "422 when conversation_id is not a UUID", %{conn: conn} do
+      resp = post(conn, "/calls/api/v1/calls", %{conversation_id: "not-a-uuid"})
+      assert json_response(resp, 422)
+    end
+
+    test "422 when conversation_id is a non-string scalar", %{conn: conn} do
+      resp = post(conn, "/calls/api/v1/calls", %{conversation_id: 42})
+      assert json_response(resp, 422)
+    end
+  end
+
   describe "DELETE /calls/:id" do
     test "204 when participant leaves", %{conn: conn, user_id: user_id} do
       expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
@@ -128,6 +190,44 @@ defmodule WhisprCallsWeb.CallControllerTest do
       resp = get(conn, "/calls/api/v1/calls?limit=99999")
       %{"data" => calls} = json_response(resp, 200)
       assert length(calls) == 100
+    end
+
+    test "?status filter is applied at the SQL layer", %{conn: conn, user_id: user_id} do
+      _calls = seed_calls_for(user_id, 2)
+
+      resp = get(conn, "/calls/api/v1/calls?status=ringing")
+      assert %{"data" => calls} = json_response(resp, 200)
+      assert Enum.all?(calls, &(&1["status"] == "ringing"))
+    end
+
+    test "?conversation_id filter is applied at the SQL layer", %{conn: conn, user_id: user_id} do
+      [_c2, _c1] = seed_calls_for(user_id, 2)
+      conv = Ecto.UUID.generate()
+
+      resp = get(conn, "/calls/api/v1/calls?conversation_id=#{conv}")
+      assert %{"data" => []} = json_response(resp, 200)
+    end
+
+    test "?limit accepts integer params as well as strings", %{conn: conn, user_id: user_id} do
+      seed_calls_for(user_id, 3)
+
+      # Passing a literal integer hits the parse_int(integer, _) clause.
+      resp =
+        get(
+          conn,
+          "/calls/api/v1/calls",
+          %{"limit" => 5}
+        )
+
+      assert %{"data" => calls} = json_response(resp, 200)
+      assert length(calls) == 3
+    end
+
+    test "negative ?limit clamps to 1", %{conn: conn, user_id: user_id} do
+      seed_calls_for(user_id, 3)
+      resp = get(conn, "/calls/api/v1/calls?limit=-5")
+      assert %{"data" => calls} = json_response(resp, 200)
+      assert length(calls) == 1
     end
 
     test "?offset skips the first N results", %{conn: conn, user_id: user_id} do
