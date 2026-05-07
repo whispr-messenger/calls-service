@@ -59,6 +59,46 @@ defmodule WhisprCallsWeb.LiveKitWebhookControllerTest do
     assert response(resp, 200)
   end
 
+  test "participant_left for an unknown room returns 200 (no-op)", %{conn: conn} do
+    event = %{
+      "event" => "participant_left",
+      "room" => %{"name" => "call_unknown_room"},
+      "participant" => %{"identity" => Ecto.UUID.generate()}
+    }
+
+    resp = post(conn, "/calls/webhooks/livekit", event)
+    assert response(resp, 200)
+  end
+
+  test "participant_left for a known room with an unknown user returns 200 (not_invited noop)",
+       %{conn: conn} do
+    Mox.stub(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
+    Mox.stub(LiveKitClientMock, :generate_access_token, fn _, _, _ -> {:ok, "t"} end)
+
+    initiator = Ecto.UUID.generate()
+
+    {:ok, call, _} =
+      WhisprCalls.Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+        type: "audio",
+        participant_ids: []
+      })
+
+    event = %{
+      "event" => "participant_left",
+      "room" => %{"name" => call.livekit_room},
+      "participant" => %{"identity" => Ecto.UUID.generate()}
+    }
+
+    resp = post(conn, "/calls/webhooks/livekit", event)
+    assert response(resp, 200)
+  end
+
+  test "room_finished for an unknown room returns 200 (no-op)", %{conn: conn} do
+    event = %{"event" => "room_finished", "room" => %{"name" => "call_unknown"}}
+    resp = post(conn, "/calls/webhooks/livekit", event)
+    assert response(resp, 200)
+  end
+
   describe "signature verification" do
     setup do
       secret = "webhook_test_secret"
