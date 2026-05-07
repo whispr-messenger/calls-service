@@ -95,7 +95,8 @@ defmodule WhisprCalls.CallsTest do
       expect(LiveKitClientMock, :create_room, fn _name, _opts -> {:ok, %{}} end)
 
       expect(LiveKitClientMock, :generate_access_token, fn ^initiator, _room, _opts ->
-        {:ok, "lk_token"} end)
+        {:ok, "lk_token"}
+      end)
 
       assert {:ok, _call, _tokens} =
                Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
@@ -392,6 +393,35 @@ defmodule WhisprCalls.CallsTest do
 
       assert Enum.sort(ids) == Enum.sort([call1.id, call2.id])
     end
+
+    test ":status filter only keeps calls with the matching status" do
+      user = Ecto.UUID.generate()
+      {_i, _v, ringing} = seed_ringing_call_for(user)
+
+      # Promote the second call to ended.
+      {_i2, _v2, other} = seed_ringing_call_for(user)
+
+      {:ok, _} =
+        other
+        |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now()})
+        |> Repo.update()
+
+      assert [%Call{id: id, status: "ringing"}] =
+               Calls.list_user_calls(user, %{status: "ringing"})
+
+      assert id == ringing.id
+    end
+
+    test ":conversation_id filter only keeps calls in that conversation" do
+      user = Ecto.UUID.generate()
+      {_i, _v, target} = seed_ringing_call_for(user)
+      {_i2, _v2, _other} = seed_ringing_call_for(user)
+
+      assert [%Call{id: id}] =
+               Calls.list_user_calls(user, %{conversation_id: target.conversation_id})
+
+      assert id == target.id
+    end
   end
 
   describe "get_call_if_participant/2" do
@@ -404,6 +434,62 @@ defmodule WhisprCalls.CallsTest do
     test "returns :not_found when user is not a participant" do
       {_initiator, _invitee, call} = seed_ringing_call()
       assert {:error, :not_found} = Calls.get_call_if_participant(call.id, Ecto.UUID.generate())
+    end
+  end
+
+  describe "fetch_call edge cases" do
+    test "accept_call with an unknown call_id returns :call_not_found" do
+      assert {:error, :call_not_found} =
+               Calls.accept_call(Ecto.UUID.generate(), Ecto.UUID.generate())
+    end
+
+    test "decline_call with an unknown call_id returns :call_not_found" do
+      assert {:error, :call_not_found} =
+               Calls.decline_call(Ecto.UUID.generate(), Ecto.UUID.generate())
+    end
+
+    test "end_call with an unknown call_id returns :call_not_found" do
+      assert {:error, :call_not_found} =
+               Calls.end_call(Ecto.UUID.generate(), Ecto.UUID.generate())
+    end
+
+    test "handle_participant_left with an unknown room returns :not_found" do
+      assert {:error, :not_found} =
+               Calls.handle_participant_left("call_unknown", Ecto.UUID.generate())
+    end
+  end
+
+  describe "messaging-service list_members/1 transport failures" do
+    test "returns :invitee_not_member when list_members itself errors" do
+      Application.put_env(
+        :whispr_calls,
+        :messaging_client,
+        WhisprCalls.Grpc.MessagingClientMock
+      )
+
+      on_exit(fn ->
+        Application.put_env(
+          :whispr_calls,
+          :messaging_client,
+          WhisprCalls.Grpc.MessagingClient.Stub
+        )
+      end)
+
+      initiator = Ecto.UUID.generate()
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :verify_membership, fn _, _ ->
+        {:ok, :member}
+      end)
+
+      expect(WhisprCalls.Grpc.MessagingClientMock, :list_members, fn _ ->
+        {:error, :timeout}
+      end)
+
+      assert {:error, :invitee_not_member} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: [Ecto.UUID.generate()]
+               })
     end
   end
 
