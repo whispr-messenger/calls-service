@@ -61,6 +61,18 @@ defmodule WhisprCallsWeb.CallChannelTest do
     assert_broadcast "participant_muted", %{muted: true}
   end
 
+  test "camera_off broadcasts participant_camera_off when payload is boolean" do
+    socket = join_as_initiator()
+    push(socket, "camera_off", %{"off" => true})
+    assert_broadcast "participant_camera_off", %{off: true}
+  end
+
+  test "camera_off with non-boolean payload is rejected with invalid_payload" do
+    socket = join_as_initiator()
+    ref = push(socket, "camera_off", %{"off" => "yep"})
+    assert_reply ref, :error, %{reason: "invalid_payload"}
+  end
+
   defp join_as_initiator do
     initiator = Ecto.UUID.generate()
     expect(LiveKitClientMock, :create_room, fn _, _ -> {:ok, %{}} end)
