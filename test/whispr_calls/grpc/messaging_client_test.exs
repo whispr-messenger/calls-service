@@ -90,6 +90,55 @@ defmodule WhisprCalls.Grpc.MessagingClientTest do
 
       assert {:error, :not_member} = HTTP.verify_membership("conv-1", "user-1")
     end
+
+    test "returns {:error, :not_member} on a non 200/403/404 status" do
+      stub_req(fn conn ->
+        Plug.Conn.send_resp(conn, 500, "boom")
+      end)
+
+      assert {:error, :not_member} = HTTP.verify_membership("conv-1", "user-1")
+    end
+
+    test "returns {:error, term} when Req returns a transport error" do
+      stub_req(fn conn ->
+        # Req.Test.transport_error/2 simulates a transport-level failure, which
+        # Req surfaces as {:error, %Req.TransportError{}}.
+        Req.Test.transport_error(conn, :timeout)
+      end)
+
+      assert {:error, _} = HTTP.verify_membership("conv-1", "user-1")
+    end
+
+    test "extracts member ids from {userId: ...} as well as {user_id: ...}" do
+      stub_req(fn conn ->
+        Req.Test.json(conn, %{
+          "members" => [
+            %{"userId" => "camel-1"},
+            %{"user_id" => "snake-1"},
+            %{"unknown" => "skip-me"}
+          ]
+        })
+      end)
+
+      assert {:ok, :member} = HTTP.verify_membership("conv-1", "camel-1")
+      assert {:ok, :member} = HTTP.verify_membership("conv-1", "snake-1")
+    end
+
+    test "returns {:error, :not_member} when the body is not a list/map (defensive parse)" do
+      stub_req(fn conn ->
+        Req.Test.json(conn, %{"unexpected" => "shape"})
+      end)
+
+      assert {:error, :not_member} = HTTP.verify_membership("conv-1", "user-1")
+    end
+
+    test "supports a top-level list of member maps too" do
+      stub_req(fn conn ->
+        Req.Test.json(conn, [%{"user_id" => "user-1"}])
+      end)
+
+      assert {:ok, :member} = HTTP.verify_membership("conv-1", "user-1")
+    end
   end
 
   defp stub_req(fun) do
