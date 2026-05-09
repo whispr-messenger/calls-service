@@ -42,6 +42,15 @@ config :phoenix, :json_library, Jason
 # Pin the adapter to hackney so we don't silently fall back to :httpc.
 config :tesla, adapter: Tesla.Adapter.Hackney
 
+# Hammer rate limiter (WHISPR-1363). Backend ETS in-memory, suffisant pour
+# le scope mono-pod actuel. Si on passe a >1 replica calls-service il faudra
+# bump vers Hammer.Backend.Redis (sinon les compteurs ne sont pas partages
+# entre instances et le rate limit devient effectif x N pods).
+# expiry_ms = 1h : on garde les buckets une heure histoire de detecter les
+# patterns d abus repetes ; cleanup_interval_ms = 10 min.
+config :hammer,
+  backend: {Hammer.Backend.ETS, [expiry_ms: 60_000 * 60, cleanup_interval_ms: 60_000 * 10]}
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"
