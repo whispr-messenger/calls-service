@@ -87,6 +87,11 @@ if public_url = System.get_env("LIVEKIT_PUBLIC_URL") do
 end
 
 if config_env() == :prod do
+  # fail-loud sur env critique au boot, peu importe PHX_SERVER. Migration-only
+  # pods, IEx et health probe containers doivent aussi crash plutot que de
+  # booter avec un secret_key_base nil silencieux.
+  secret_key_base = System.fetch_env!("SECRET_KEY_BASE")
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """
@@ -103,18 +108,6 @@ if config_env() == :prod do
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6
-
-  # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
 
   host = System.get_env("PHX_HOST") || "example.com"
 
