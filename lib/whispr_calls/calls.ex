@@ -64,23 +64,73 @@ defmodule WhisprCalls.Calls do
              | :participant_not_invited
              | term()}
   def accept_call(call_id, user_id) do
-    with {:ok, call} <- fetch_call(call_id),
-         :ok <- ensure_call_ringing(call),
-         {:ok, participant} <- fetch_participant(call_id, user_id),
-         :ok <- ensure_participant_invited(participant),
-         {:ok, %{call: updated_call}} <- mark_participant_joined(call, participant),
-         {:ok, token} <- LiveKitClient.generate_access_token(user_id, call.livekit_room, []) do
-      track_active_participant(updated_call, user_id)
+    # verrou FOR UPDATE pour serialiser les accept concurrents (group call)
+    case Repo.transaction(accept_call_multi(call_id, user_id)) do
+      {:ok, %{call: updated_call}} ->
+        with {:ok, token} <-
+               LiveKitClient.generate_access_token(user_id, updated_call.livekit_room, []) do
+          track_active_participant(updated_call, user_id)
 
-      _ =
-        Publisher.publish("whispr:calls:accepted", %{
-          call_id: updated_call.id,
-          user_id: user_id,
-          accepted_at: DateTime.to_iso8601(DateTime.utc_now())
-        })
+          _ =
+            Publisher.publish("whispr:calls:accepted", %{
+              call_id: updated_call.id,
+              user_id: user_id,
+              accepted_at: DateTime.to_iso8601(DateTime.utc_now())
+            })
 
-      {:ok, updated_call, %{token: token, url: livekit_public_url()}}
+          {:ok, updated_call, %{token: token, url: livekit_public_url()}}
+        end
+
+      {:error, _step, reason, _changes} ->
+        {:error, reason}
     end
+  end
+
+  # Construit la transaction qui pose un FOR UPDATE sur la row Call,
+  # revalide le statut sous lock, charge le participant et applique les
+  # updates dans la meme transaction. Garantit qu un seul accept passe le
+  # call de "ringing" a "connected" sur un appel de groupe.
+  defp accept_call_multi(call_id, user_id) do
+    Multi.new()
+    |> Multi.run(:locked_call, fn repo, _ ->
+      case repo.get(Call, call_id, lock: "FOR UPDATE") do
+        nil -> {:error, :call_not_found}
+        %Call{} = call -> {:ok, call}
+      end
+    end)
+    |> Multi.run(:check_ringing, fn _repo, %{locked_call: call} ->
+      case ensure_call_ringing(call) do
+        :ok -> {:ok, :ringing}
+        err -> err
+      end
+    end)
+    |> Multi.run(:participant, fn repo, _ ->
+      case repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
+        nil -> {:error, :not_invited}
+        %CallParticipant{} = p -> {:ok, p}
+      end
+    end)
+    |> Multi.run(:check_invited, fn _repo, %{participant: p} ->
+      case ensure_participant_invited(p) do
+        :ok -> {:ok, :invited}
+        err -> err
+      end
+    end)
+    |> Multi.run(:joined, fn repo, %{participant: participant} ->
+      now = DateTime.utc_now()
+
+      with {:ok, _} <-
+             participant
+             |> CallParticipant.changeset(%{status: "joined", joined_at: now})
+             |> repo.update() do
+        {:ok, now}
+      end
+    end)
+    |> Multi.run(:call, fn repo, %{locked_call: call, joined: now} ->
+      call
+      |> Call.changeset(call_connected_attrs(call, now))
+      |> repo.update()
+    end)
   end
 
   # Only a ringing call can be accepted or declined. Already-terminal statuses
@@ -366,24 +416,6 @@ defmodule WhisprCalls.Calls do
       nil -> {:error, :not_invited}
       %CallParticipant{} = participant -> {:ok, participant}
     end
-  end
-
-  defp mark_participant_joined(%Call{} = call, %CallParticipant{} = participant) do
-    now = DateTime.utc_now()
-
-    Multi.new()
-    |> Multi.update(
-      :participant,
-      CallParticipant.changeset(participant, %{
-        status: "joined",
-        joined_at: now
-      })
-    )
-    |> Multi.update(
-      :call,
-      Call.changeset(call, call_connected_attrs(call, now))
-    )
-    |> Repo.transaction()
   end
 
   defp call_connected_attrs(%Call{status: "ringing"} = _call, now) do
