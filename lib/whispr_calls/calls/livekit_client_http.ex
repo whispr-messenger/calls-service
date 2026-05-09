@@ -97,6 +97,30 @@ defmodule WhisprCalls.Calls.LiveKitClientHTTP do
     }
 
   @impl true
+  def list_rooms do
+    api_key = Application.fetch_env!(:whispr_calls, :livekit_api_key)
+    api_secret = Application.fetch_env!(:whispr_calls, :livekit_api_secret)
+    api_url = Application.fetch_env!(:whispr_calls, :livekit_api_url)
+
+    token = admin_token(api_key, api_secret)
+
+    case Req.post(api_url <> "/twirp/livekit.RoomService/ListRooms",
+           headers: [{"authorization", "Bearer " <> token}],
+           json: %{}
+         ) do
+      {:ok, %{status: 200, body: %{"rooms" => rooms}}} when is_list(rooms) ->
+        {:ok, Enum.map(rooms, & &1["name"])}
+
+      {:ok, %{status: 200, body: _body}} ->
+        # Reponse sans champ "rooms" = aucune room active
+        {:ok, []}
+
+      other ->
+        {:error, other}
+    end
+  end
+
+  @impl true
   def revoke_participant(room_name, user_id) do
     # Force le kick d un participant cote LiveKit. Combine avec un TTL court
     # cote token (120s), ca evite qu un attaquant qui a sniff un token reste

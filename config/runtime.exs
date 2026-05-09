@@ -86,6 +86,13 @@ if public_url = System.get_env("LIVEKIT_PUBLIC_URL") do
   config :whispr_calls, livekit_public_url: public_url
 end
 
+# Intervalle du reconciler rooms LiveKit (defaut 5 min = 300 000 ms).
+# Peut etre surcharge via env var RECONCILER_INTERVAL_MS pour les envs
+# qui ont besoin d un cycle plus court (ex: preprod de debug).
+if interval = System.get_env("RECONCILER_INTERVAL_MS") do
+  config :whispr_calls, reconciler_interval_ms: String.to_integer(interval)
+end
+
 if config_env() == :prod do
   # fail-loud sur env critique au boot, peu importe PHX_SERVER. Migration-only
   # pods, IEx et health probe containers doivent aussi crash plutot que de
