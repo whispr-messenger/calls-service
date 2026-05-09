@@ -32,8 +32,26 @@ defmodule WhisprCalls.Grpc.MessagingClient do
     impl().list_members(conversation_id)
   end
 
+  # Pas de default fail-open: si la cle n est pas set en prod on raise plutot
+  # que de laisser le Stub renvoyer {:ok, :member} et faire passer tous les
+  # checks de membership silencieusement.
   defp impl do
-    Application.get_env(:whispr_calls, :messaging_client, __MODULE__.Stub)
+    case Application.get_env(:whispr_calls, :messaging_client) do
+      nil ->
+        if Application.get_env(:whispr_calls, :env) == :prod do
+          raise """
+          :messaging_client is not configured in production.
+          Set it in config/runtime.exs (e.g. WhisprCalls.Grpc.MessagingClient.HTTP)
+          before serving traffic. Without this, conversation membership checks
+          would silently pass for every user (privilege escalation).
+          """
+        else
+          __MODULE__.Stub
+        end
+
+      mod ->
+        mod
+    end
   end
 
   defmodule Stub do
