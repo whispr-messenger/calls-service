@@ -6,6 +6,8 @@ defmodule WhisprCallsWeb.FallbackController do
   """
   use Phoenix.Controller, formats: [:json]
 
+  require Logger
+
   def call(conn, {:error, :not_found}),
     do: conn |> put_status(404) |> json(%{error: "not_found"})
 
@@ -46,6 +48,8 @@ defmodule WhisprCallsWeb.FallbackController do
     do: conn |> put_status(422) |> json(%{error: "validation_failed"})
 
   def call(conn, {:error, reason}) do
-    conn |> put_status(500) |> json(%{error: inspect(reason)})
+    # ne jamais exposer la raison brute aux clients (pourrait fuiter struct/PID/atom interne)
+    Logger.error("unhandled fallback error: #{inspect(reason)}")
+    conn |> put_status(500) |> json(%{error: "internal_server_error"})
   end
 end
