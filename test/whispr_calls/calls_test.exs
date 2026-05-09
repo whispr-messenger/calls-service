@@ -255,6 +255,53 @@ defmodule WhisprCalls.CallsTest do
       assert_receive {:published, "whispr:calls:participant_left", %{user_id: ^invitee}}, 500
       assert_receive {:published, "whispr:calls:ended", %{end_reason: "peer_left"}}, 500
     end
+
+    test "idempotent : end_call sur un call deja ended ne re-finalize pas" do
+      {a, b, c, call} = seed_connected_group_call()
+
+      # Premier all_left finalize le call.
+      expect(LiveKitClientMock, :delete_room, fn _ -> :ok end)
+      assert {:ok, _} = Calls.end_call(call.id, a)
+      assert {:ok, _} = Calls.end_call(call.id, b)
+      assert {:ok, ended} = Calls.end_call(call.id, c)
+      assert ended.status == "ended"
+
+      # Un nouveau end_call (ex: webhook participant_left tardif d un peer
+      # deja "left") doit etre idempotent : pas de delete_room ni de
+      # republish, retour {:ok, call}. Aucune nouvelle expect sur le mock.
+      assert {:ok, still_ended} = Calls.end_call(call.id, a)
+      assert still_ended.status == "ended"
+      assert still_ended.end_reason == "all_left"
+    end
+
+    test "groupe : leaves concurrents serialises par le lock FOR UPDATE" do
+      # 3 participants, on lance 2 leaves concurrents (a et b). Avec le lock
+      # FOR UPDATE le second observe l etat post-premier-leave et conclut
+      # has_active_participants? == true (c est encore joined). Le call doit
+      # rester connected, c reste joined, et aucun delete_room n est appele.
+      {a, b, c, call} = seed_connected_group_call()
+
+      parent = self()
+
+      tasks =
+        Enum.map([a, b], fn user_id ->
+          Task.async(fn ->
+            Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+            Calls.end_call(call.id, user_id)
+          end)
+        end)
+
+      results = Task.await_many(tasks, 5_000)
+      assert Enum.all?(results, fn r -> match?({:ok, _}, r) end)
+
+      # Le call est toujours connected, c est encore joined.
+      assert Repo.get!(Call, call.id).status == "connected"
+      assert Repo.get_by!(CallParticipant, call_id: call.id, user_id: c).status == "joined"
+
+      # a et b sont maintenant en "left".
+      assert Repo.get_by!(CallParticipant, call_id: call.id, user_id: a).status == "left"
+      assert Repo.get_by!(CallParticipant, call_id: call.id, user_id: b).status == "left"
+    end
   end
 
   describe "accept_call/2 on an already-ended call" do
