@@ -165,5 +165,16 @@ if config_env() == :prod do
       messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
       messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
       messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
+
+    # Validation optionnelle de iss / aud sur les JWT entrants. Si auth-service
+    # emet ces claims, les enforcer ici evite qu un token destine a un autre
+    # service (ex: media) soit accepte par calls-service.
+    if iss = System.get_env("JWT_EXPECTED_ISSUER") do
+      config :whispr_calls, jwt_expected_issuer: iss
+    end
+
+    if aud = System.get_env("JWT_EXPECTED_AUDIENCE") do
+      config :whispr_calls, jwt_expected_audience: aud
+    end
   end
 end
