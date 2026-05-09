@@ -1,0 +1,65 @@
+name: 🛡️ Elixir SAST
+
+# Scanne les dépendances Hex pour détecter les CVE connues. Complément
+# du scan Trivy filesystem qui ne couvre pas les patterns Phoenix/Elixir.
+# mix_audit retourne un exit code non-nul sur CVE détectée, ce qui bloque
+# le merge sur régression.
+
+on:
+  repository_dispatch:
+    types: [run-elixir-sast]
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  mix-audit:
+    name: 🔍 mix_audit (Hex CVE)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.event.client_payload.ref }}
+
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.17'
+          otp-version: '27'
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-audit-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-audit-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      # mix_audit ne produit pas de SARIF nativement. On capture la sortie
+      # dans un fichier exposé en artefact ; le exit code non-nul bloque
+      # la CI en cas de CVE détectée.
+      - name: Run mix_audit
+        run: |
+          set -o pipefail
+          mix deps.audit 2>&1 | tee mix-audit-results.txt
+
+      - name: Upload mix_audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mix-audit-results
+          path: mix-audit-results.txt
+          retention-days: 30
