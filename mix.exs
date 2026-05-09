@@ -47,7 +47,7 @@ defmodule WhisprCalls.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:phoenix, "~> 1.8.5"},
+      {:phoenix, "~> 1.8.6"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
@@ -55,7 +55,7 @@ defmodule WhisprCalls.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.4"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.11.0"},
       {:dns_cluster, "~> 0.2.0"},
       {:redix, "~> 1.5"},
       {:joken, "~> 2.6"},
