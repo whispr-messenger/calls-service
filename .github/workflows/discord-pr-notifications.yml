@@ -13,18 +13,23 @@ jobs:
     name: Send Discord Notification
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged == true
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
       - name: Extract commit SHA
         id: commit
+        if: env.DISCORD_WEBHOOK_URL != ''
         run: |
-          SHORT_SHA=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
-          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+          SHORT_SHA="${PR_HEAD_SHA:0:7}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Send Discord notification
+        if: env.DISCORD_WEBHOOK_URL != ''
         uses: tsickert/discord-webhook@v7.0.0
         with:
-          webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          webhook-url: ${{ env.DISCORD_WEBHOOK_URL }}
           username: "GitHub Actions"
           avatar-url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
           embed-title: "✅ Pull Request merged"
