@@ -98,9 +98,31 @@ defmodule WhisprCallsWeb.FallbackControllerTest do
     assert decode(conn) == %{"error" => "validation_failed"}
   end
 
-  test "unknown atom error -> 500 with reason inspected" do
-    conn = run({:error, :something_unexpected})
-    assert conn.status == 500
-    assert decode(conn) == %{"error" => ":something_unexpected"}
+  test "unknown atom error -> 500 generic, ne fuit pas la raison" do
+    import ExUnit.CaptureLog
+
+    log =
+      capture_log(fn ->
+        conn = run({:error, :something_unexpected})
+        assert conn.status == 500
+        assert decode(conn) == %{"error" => "internal_server_error"}
+      end)
+
+    # la raison reelle doit etre loggee cote serveur, pas exposee au client
+    assert log =~ "something_unexpected"
+  end
+
+  test "unknown tuple error -> 500 generic, ne fuit pas la struct" do
+    import ExUnit.CaptureLog
+
+    log =
+      capture_log(fn ->
+        conn = run({:error, {:db_failure, %{secret: "leak"}}})
+        assert conn.status == 500
+        assert decode(conn) == %{"error" => "internal_server_error"}
+        refute decode(conn)["error"] =~ "leak"
+      end)
+
+    assert log =~ "db_failure"
   end
 end
