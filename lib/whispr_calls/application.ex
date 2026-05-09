@@ -41,7 +41,7 @@ defmodule WhisprCalls.Application do
   # with a ticking worker that would check out connections on its own.
   defp workers do
     if Application.get_env(:whispr_calls, :start_background_workers?, true) do
-      [WhisprCalls.Workers.RingingTimeoutWorker]
+      [WhisprCalls.Workers.RingingTimeoutWorker, WhisprCalls.Workers.RoomReconciler]
     else
       []
     end
