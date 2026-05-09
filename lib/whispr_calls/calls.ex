@@ -185,24 +185,50 @@ defmodule WhisprCalls.Calls do
   """
   @spec end_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def end_call(call_id, user_id) do
-    with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id) do
-      finalize_end_call(call, participant)
+    # verrou FOR UPDATE pour serialiser les leave concurrents en groupe.
+    # Sans lock, deux leaves quasi-simultanes peuvent observer un etat
+    # intermediaire et soit double-finaliser (race vers all_left), soit
+    # laisser le call en "connected" alors que plus personne n est actif.
+    case Repo.transaction(end_call_multi(call_id, user_id)) do
+      {:ok, %{result: {:ok, call}}} -> {:ok, call}
+      {:ok, %{result: {:error, reason}}} -> {:error, reason}
+      {:error, _step, reason, _changes} -> {:error, reason}
     end
   end
 
-  # Calling end_call on an already-ended call is a no-op: participant status
-  # is preserved, no additional Redis event is published and the LiveKit room
-  # is not re-deleted.
-  defp finalize_end_call(%Call{status: "ended"} = call, _participant), do: {:ok, call}
+  defp end_call_multi(call_id, user_id) do
+    Multi.new()
+    |> Multi.run(:locked_call, fn repo, _ ->
+      case repo.get(Call, call_id, lock: "FOR UPDATE") do
+        nil -> {:error, :call_not_found}
+        %Call{} = call -> {:ok, call}
+      end
+    end)
+    |> Multi.run(:participant, fn repo, _ ->
+      case repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
+        nil -> {:error, :not_invited}
+        %CallParticipant{} = participant -> {:ok, participant}
+      end
+    end)
+    |> Multi.run(:result, fn repo, %{locked_call: call, participant: participant} ->
+      finalize_end_call_locked(repo, call, participant)
+    end)
+  end
 
-  defp finalize_end_call(%Call{} = call, %CallParticipant{} = participant) do
+  # Idempotent : si le call est deja "ended" (autre leave a deja finalise
+  # sous le lock), on retourne {:ok, call} sans toucher au participant
+  # ni republier d evenement.
+  defp finalize_end_call_locked(_repo, %Call{status: "ended"} = call, _participant) do
+    {:ok, {:ok, call}}
+  end
+
+  defp finalize_end_call_locked(repo, %Call{} = call, %CallParticipant{} = participant) do
     with {:ok, _updated} <-
            participant
            |> CallParticipant.changeset(%{status: "left", left_at: DateTime.utc_now()})
-           |> Repo.update() do
+           |> repo.update() do
       _ = publish_participant_left(call, participant.user_id)
-      finalize_or_continue(call)
+      {:ok, finalize_or_continue(repo, call)}
     end
   end
 
@@ -210,12 +236,16 @@ defmodule WhisprCalls.Calls do
   # participant leaves. Otherwise (group call), keep the call alive until
   # all active participants have left. This avoids the bug where peer B
   # remains stuck on the LiveKit room after peer A hangs up.
-  defp finalize_or_continue(%Call{} = call) do
+  #
+  # Appele sous le lock FOR UPDATE de la row Call : les requetes
+  # one_to_one?/any_participant_left?/has_active_participants? observent
+  # un snapshot stable, plus de race d interleaving sur les leave groupe.
+  defp finalize_or_continue(repo, %Call{} = call) do
     cond do
-      one_to_one?(call) and any_participant_left?(call.id) ->
+      one_to_one?(repo, call) and any_participant_left?(repo, call.id) ->
         finalize_call(call, "peer_left")
 
-      has_active_participants?(call.id) ->
+      has_active_participants?(repo, call.id) ->
         {:ok, call}
 
       true ->
@@ -223,25 +253,25 @@ defmodule WhisprCalls.Calls do
     end
   end
 
-  defp has_active_participants?(call_id) do
-    Repo.exists?(
+  defp has_active_participants?(repo, call_id) do
+    repo.exists?(
       from p in CallParticipant,
         where: p.call_id == ^call_id and p.status == "joined"
     )
   end
 
-  defp any_participant_left?(call_id) do
-    Repo.exists?(
+  defp any_participant_left?(repo, call_id) do
+    repo.exists?(
       from p in CallParticipant,
         where: p.call_id == ^call_id and p.status == "left"
     )
   end
 
-  defp one_to_one?(%Call{id: call_id, type: type}) when type in ["audio", "video"] do
-    Repo.aggregate(from(p in CallParticipant, where: p.call_id == ^call_id), :count) == 2
+  defp one_to_one?(repo, %Call{id: call_id, type: type}) when type in ["audio", "video"] do
+    repo.aggregate(from(p in CallParticipant, where: p.call_id == ^call_id), :count) == 2
   end
 
-  defp one_to_one?(_), do: false
+  defp one_to_one?(_repo, _), do: false
 
   defp publish_participant_left(%Call{} = call, user_id) do
     Publisher.publish("whispr:calls:participant_left", %{
