@@ -5,6 +5,10 @@ import Config
 # Note `:force_ssl` is required to be set at compile-time.
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   force_ssl: [
+    # HSTS un an pour que les navigateurs refusent toute connexion en clair.
+    # Sans `expires`, le header est envoye avec max-age=0 (no-op cote browser).
+    hsts: true,
+    expires: 31_536_000,
     rewrite_on: [:x_forwarded_proto],
     exclude: [
       # paths: ["/health"],
