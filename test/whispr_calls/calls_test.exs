@@ -535,6 +535,23 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "finalize_call revoke_participant" do
+    test "kick chaque participant LiveKit avant delete_room (WHISPR-1363)" do
+      {initiator, invitee, call} = seed_connected_call()
+
+      # 2 participants -> on doit voir 2 revoke avant le delete_room.
+      expect(LiveKitClientMock, :revoke_participant, 2, fn _room, user_id ->
+        assert user_id in [initiator, invitee]
+        :ok
+      end)
+
+      expect(LiveKitClientMock, :delete_room, fn _room -> :ok end)
+
+      assert {:ok, ended} = Calls.end_call(call.id, invitee)
+      assert ended.status == "ended"
+    end
+  end
+
   describe "redis active-participants cleanup" do
     test "finalize_call drops calls:{room}:participants in Redis" do
       {initiator, invitee, call} = seed_connected_call()

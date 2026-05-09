@@ -31,7 +31,20 @@ defmodule WhisprCalls.DataCase do
 
   setup tags do
     WhisprCalls.DataCase.setup_sandbox(tags)
+    WhisprCalls.DataCase.stub_default_livekit_revoke()
     :ok
+  end
+
+  @doc """
+  Default Mox stub pour `revoke_participant`. Le callback est appele dans
+  `Calls.finalize_call/2` (WHISPR-1363) et la majorite des tests n ont pas
+  besoin d asserter explicitement le kick : on retourne `:ok` par defaut.
+  Les tests qui veulent compter les appels surchargent avec `Mox.expect/4`.
+  """
+  def stub_default_livekit_revoke do
+    Mox.stub(WhisprCalls.Calls.LiveKitClientMock, :revoke_participant, fn _room, _user ->
+      :ok
+    end)
   end
 
   @doc """

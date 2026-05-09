@@ -216,6 +216,13 @@ defmodule WhisprCalls.Calls do
       })
       |> Repo.update()
 
+    # Revoke explicite des tokens LiveKit avant de delete la room (WHISPR-1363).
+    # Defense en profondeur : meme si un attaquant a sniff un token (TTL 120s),
+    # on kick chaque participant cote SFU des qu un end_call est emis.
+    # delete_room couvre normalement deja ce cas mais le revoke individuel
+    # protege le narrow window entre le moment ou un peer leave et le moment
+    # ou la room finalizes (group call avec un seul leave avant la fin).
+    _ = revoke_all_participants(call)
     _ = LiveKitClient.delete_room(call.livekit_room)
     _ = cleanup_active_participants(call)
 
@@ -229,6 +236,21 @@ defmodule WhisprCalls.Calls do
 
     {:ok, updated}
   end
+
+  # Iterates sur tous les participants connus du call pour les kick LiveKit.
+  # Ignore les erreurs individuelles : on est dans le finalize, le delete_room
+  # qui suit fait office de filet de securite.
+  defp revoke_all_participants(%Call{id: call_id, livekit_room: room}) when is_binary(room) do
+    CallParticipant
+    |> where([p], p.call_id == ^call_id)
+    |> select([p], p.user_id)
+    |> Repo.all()
+    |> Enum.each(fn user_id ->
+      _ = LiveKitClient.revoke_participant(room, user_id)
+    end)
+  end
+
+  defp revoke_all_participants(_), do: :ok
 
   # The Redis set `calls:{room}:participants` is populated by
   # `track_active_participant/2` on each accept. It's kept around for ad-hoc
