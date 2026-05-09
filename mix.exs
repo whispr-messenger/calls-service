@@ -66,6 +66,10 @@ defmodule WhisprCalls.MixProject do
       {:hackney, "~> 1.20"},
       {:req, "~> 0.5"},
       {:oban, "~> 2.17"},
+      # Rate limiter ETS-backed (WHISPR-1363). Utilise par le plug
+      # WhisprCallsWeb.Plugs.RateLimitCallCreation pour brider POST /calls
+      # a 5/min/user et eviter le flood notifs + facture LiveKit.
+      {:hammer, "~> 6.2"},
       {:prom_ex, "~> 1.11"},
       {:logger_json, "~> 6.0"},
       {:gettext, "~> 1.0"},
