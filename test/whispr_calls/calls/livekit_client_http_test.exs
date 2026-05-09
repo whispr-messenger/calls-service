@@ -43,6 +43,46 @@ defmodule WhisprCalls.Calls.LiveKitClientHTTPTest do
     end
   end
 
+  describe "generate_access_token/3 role-gating (WHISPR-1409)" do
+    test "default role :speaker autorise publish + subscribe (retro compat)" do
+      {:ok, token} = LiveKitClientHTTP.generate_access_token("u1", "room-spk", [])
+      video = decode_unverified_claims(token)["video"]
+
+      assert video["canPublish"] == true
+      assert video["canSubscribe"] == true
+      assert video["roomJoin"] == true
+      refute Map.has_key?(video, "roomAdmin")
+      refute Map.has_key?(video, "canPublishData")
+    end
+
+    test "role :speaker explicit autorise publish + subscribe" do
+      {:ok, token} = LiveKitClientHTTP.generate_access_token("u1", "r", role: :speaker)
+      video = decode_unverified_claims(token)["video"]
+
+      assert video["canPublish"] == true
+      assert video["canSubscribe"] == true
+    end
+
+    test "role :listener autorise subscribe seulement (pas de publish)" do
+      {:ok, token} = LiveKitClientHTTP.generate_access_token("u2", "r", role: :listener)
+      video = decode_unverified_claims(token)["video"]
+
+      assert video["canPublish"] == false
+      assert video["canSubscribe"] == true
+      assert video["roomJoin"] == true
+    end
+
+    test "role :admin grant canPublishData + roomAdmin" do
+      {:ok, token} = LiveKitClientHTTP.generate_access_token("u3", "r", role: :admin)
+      video = decode_unverified_claims(token)["video"]
+
+      assert video["canPublish"] == true
+      assert video["canSubscribe"] == true
+      assert video["canPublishData"] == true
+      assert video["roomAdmin"] == true
+    end
+  end
+
   defp decode_unverified_claims(token) do
     [_h, payload, _s] = String.split(token, ".")
 
