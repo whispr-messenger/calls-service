@@ -6,6 +6,38 @@ defmodule WhisprCalls.Grpc.MessagingClientTest do
   alias WhisprCalls.Grpc.MessagingClient.Stub
 
   describe "dispatch via :messaging_client app env" do
+    test "raises in :prod when :messaging_client is missing (no fail-open Stub)" do
+      original_client = Application.get_env(:whispr_calls, :messaging_client)
+      original_env = Application.get_env(:whispr_calls, :env)
+
+      Application.delete_env(:whispr_calls, :messaging_client)
+      Application.put_env(:whispr_calls, :env, :prod)
+
+      on_exit(fn ->
+        restore_env(:messaging_client, original_client)
+        restore_env(:env, original_env)
+      end)
+
+      assert_raise RuntimeError, ~r/messaging_client is not configured in production/, fn ->
+        MessagingClient.verify_membership("conv-1", "user-1")
+      end
+    end
+
+    test "falls back to Stub outside :prod when :messaging_client is missing" do
+      original_client = Application.get_env(:whispr_calls, :messaging_client)
+      original_env = Application.get_env(:whispr_calls, :env)
+
+      Application.delete_env(:whispr_calls, :messaging_client)
+      Application.put_env(:whispr_calls, :env, :test)
+
+      on_exit(fn ->
+        restore_env(:messaging_client, original_client)
+        restore_env(:env, original_env)
+      end)
+
+      assert {:ok, :member} = MessagingClient.verify_membership("conv-1", "user-1")
+    end
+
     test "delegates to the configured implementation, not the Stub" do
       original = Application.get_env(:whispr_calls, :messaging_client)
 
@@ -151,4 +183,9 @@ defmodule WhisprCalls.Grpc.MessagingClientTest do
 
   defp restore(_key, nil), do: :ok
   defp restore(key, value), do: Application.put_env(:whispr_calls, key, value)
+
+  # Variante qui delete plutot que de laisser nil dans l env (utilise par les
+  # tests fail-open qui doivent garantir un etat propre apres run).
+  defp restore_env(key, nil), do: Application.delete_env(:whispr_calls, key)
+  defp restore_env(key, value), do: Application.put_env(:whispr_calls, key, value)
 end
