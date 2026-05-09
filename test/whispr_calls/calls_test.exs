@@ -535,6 +535,84 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "accept_call/2 race condition (WHISPR-1370)" do
+    # 2 participants invites au meme call de groupe acceptent en parallele.
+    # Avant le fix : 2 accept reussissaient car les 2 transactions lisaient
+    # un snapshot stale "ringing" et flippaient toutes les deux le call.
+    # Apres : le verrou FOR UPDATE serialise. Une seule transaction passe
+    # ringing -> connected, l autre voit "connected" sous lock et echoue
+    # proprement avec :call_not_ringing (comportement existant pour un
+    # accept apres un autre accept reussi).
+    test "2 accept concurrents sur un group call -> serialisation par FOR UPDATE" do
+      {_initiator, invitee_a, invitee_b, call} = seed_ringing_group_call()
+
+      Mox.set_mox_global()
+
+      stub(LiveKitClientMock, :generate_access_token, fn user_id, _room, _opts ->
+        {:ok, "tok_" <> user_id}
+      end)
+
+      tasks =
+        for uid <- [invitee_a, invitee_b] do
+          Task.async(fn -> Calls.accept_call(call.id, uid) end)
+        end
+
+      results = Task.await_many(tasks, 5_000)
+      successes = Enum.count(results, &match?({:ok, _, _}, &1))
+      failures = Enum.count(results, &match?({:error, :call_not_ringing}, &1))
+
+      # Sans le verrou : les 2 reussissaient (race). Avec : 1 + 1.
+      assert successes == 1
+      assert failures == 1
+
+      # Le call est passe une seule fois en "connected".
+      reloaded = Repo.get!(Call, call.id)
+      assert reloaded.status == "connected"
+      assert %DateTime{} = reloaded.connected_at
+
+      # L invitee qui a gagne la course est "joined", l autre reste "invited".
+      joined_count =
+        Repo.aggregate(
+          from(p in CallParticipant,
+            where:
+              p.call_id == ^call.id and p.user_id in ^[invitee_a, invitee_b] and
+                p.status == "joined"
+          ),
+          :count
+        )
+
+      assert joined_count == 1
+    end
+
+    # Si le meme participant accepte 2 fois en concurrence (rejeu reseau),
+    # le verrou garantit qu un seul des 2 reussit, l autre voit le statut
+    # deja "joined" et echoue avec :participant_not_invited (ou :call_not_ringing).
+    test "double accept concurrent du meme participant -> un seul succes" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      Mox.set_mox_global()
+
+      stub(LiveKitClientMock, :generate_access_token, fn _uid, _room, _opts ->
+        {:ok, "tok"}
+      end)
+
+      tasks =
+        for _ <- 1..2 do
+          Task.async(fn -> Calls.accept_call(call.id, invitee) end)
+        end
+
+      results = Task.await_many(tasks, 5_000)
+      successes = Enum.count(results, &match?({:ok, _, _}, &1))
+      failures = Enum.count(results, &match?({:error, _}, &1))
+
+      assert successes == 1
+      assert failures == 1
+
+      [{:error, reason}] = Enum.filter(results, &match?({:error, _}, &1))
+      assert reason in [:call_not_ringing, :participant_not_invited]
+    end
+  end
+
   describe "finalize_call revoke_participant" do
     test "kick chaque participant LiveKit avant delete_room (WHISPR-1363)" do
       {initiator, invitee, call} = seed_connected_call()
@@ -640,6 +718,49 @@ defmodule WhisprCalls.CallsTest do
     ])
 
     {initiator, invitee, call}
+  end
+
+  # Seeds a 3-participant ringing group call: initiator (joined) + 2 invitees (invited).
+  defp seed_ringing_group_call do
+    initiator = Ecto.UUID.generate()
+    invitee_a = Ecto.UUID.generate()
+    invitee_b = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    {:ok, call} =
+      %Call{}
+      |> Call.changeset(%{
+        initiator_id: initiator,
+        conversation_id: Ecto.UUID.generate(),
+        type: "audio",
+        livekit_room: "call_" <> Ecto.UUID.generate(),
+        started_at: now
+      })
+      |> Repo.insert()
+
+    Repo.insert_all(CallParticipant, [
+      %{
+        call_id: call.id,
+        user_id: initiator,
+        status: "joined",
+        invited_at: now,
+        joined_at: now
+      },
+      %{
+        call_id: call.id,
+        user_id: invitee_a,
+        status: "invited",
+        invited_at: now
+      },
+      %{
+        call_id: call.id,
+        user_id: invitee_b,
+        status: "invited",
+        invited_at: now
+      }
+    ])
+
+    {initiator, invitee_a, invitee_b, call}
   end
 
   # Seeds a 3-participant connected call (group call), all joined.
