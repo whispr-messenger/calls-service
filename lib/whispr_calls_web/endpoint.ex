@@ -1,4 +1,10 @@
 defmodule WhisprCallsWeb.Endpoint do
+  @moduledoc """
+  Phoenix Endpoint for the WhisprCalls application.
+
+  Sert le HTTP REST `/calls/...` et le WebSocket de signaling `/calls/ws`.
+  """
+
   use Phoenix.Endpoint, otp_app: :whispr_calls
 
   # The session will be stored in the cookie and signed,
@@ -15,9 +21,74 @@ defmodule WhisprCallsWeb.Endpoint do
   #   websocket: [connect_info: [session: @session_options]],
   #   longpoll: [connect_info: [session: @session_options]]
 
+  # check_origin est resolu a runtime via {Mod, Fun, Args} pour reutiliser la
+  # whitelist CORS_ALLOWED_ORIGINS en prod (WHISPR-1354). En dev/test la
+  # fonction renvoie true (permissive) pour ne pas casser le tooling local.
   socket "/calls/ws", WhisprCallsWeb.UserSocket,
-    websocket: true,
+    websocket: [
+      check_origin: {__MODULE__, :ws_check_origin, []}
+    ],
     longpoll: false
+
+  @doc """
+  WebSocket origin check (WHISPR-1354).
+
+  Invoque par Phoenix en MFA a chaque connexion avec le `%URI{}` de la requete.
+
+  - En `:prod`, seules les origins listees dans `CORS_ALLOWED_ORIGINS`
+    (separees par virgule) sont acceptees. Une valeur absente, vide ou un
+    wildcard `*` provoque une erreur — on refuse de booter un transport WS
+    permissif en prod sur le signaling LiveKit.
+  - En `:dev`/`:test`, renvoie `true` (permissive) pour garder le tooling
+    local et les tests fonctionnels sans config supplementaire.
+  """
+  @spec ws_check_origin(URI.t()) :: boolean()
+  def ws_check_origin(%URI{} = uri) do
+    case Application.get_env(:whispr_calls, :env) do
+      :prod ->
+        prod_origin_allowed?(uri)
+
+      _ ->
+        true
+    end
+  end
+
+  defp prod_origin_allowed?(%URI{} = uri) do
+    case System.get_env("CORS_ALLOWED_ORIGINS") do
+      nil ->
+        raise "CORS_ALLOWED_ORIGINS must be set in production for WebSocket origin check (WHISPR-1354)"
+
+      "" ->
+        raise "CORS_ALLOWED_ORIGINS cannot be empty in production for WebSocket origin check (WHISPR-1354)"
+
+      "*" ->
+        raise "CORS_ALLOWED_ORIGINS=* is not allowed for WebSocket origin check in production (WHISPR-1354)"
+
+      value ->
+        origins =
+          value
+          |> String.split(",")
+          |> Enum.map(&String.trim/1)
+          |> Enum.reject(&(&1 == ""))
+
+        origin_string = build_origin_string(uri)
+        origin_string in origins
+    end
+  end
+
+  defp build_origin_string(%URI{scheme: scheme, host: host, port: port})
+       when is_binary(scheme) and is_binary(host) do
+    base = "#{scheme}://#{host}"
+
+    cond do
+      is_nil(port) -> base
+      scheme == "https" and port == 443 -> base
+      scheme == "http" and port == 80 -> base
+      true -> "#{base}:#{port}"
+    end
+  end
+
+  defp build_origin_string(_), do: ""
 
   # Serve at "/" the static files from "priv/static" directory.
   #

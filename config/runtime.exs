@@ -28,6 +28,15 @@ config :whispr_calls, env: config_env()
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# WebSocket origin check (WHISPR-1354). En prod on resoud via MFA pour
+# whitelister CORS_ALLOWED_ORIGINS au lieu de garder le `false` permissif
+# herite de dev. Le risque sinon : un site tiers peut initier des appels
+# LiveKit cross-origin si un user authentifie visite la page.
+if config_env() == :prod do
+  config :whispr_calls, WhisprCallsWeb.Endpoint,
+    check_origin: {WhisprCallsWeb.Endpoint, :ws_check_origin, []}
+end
+
 # Redis connection URL: prefer a full REDIS_URL, otherwise compose REDIS_HOST
 # + REDIS_PORT (used by the docker test stack and the Kubernetes manifests).
 config :whispr_calls,
