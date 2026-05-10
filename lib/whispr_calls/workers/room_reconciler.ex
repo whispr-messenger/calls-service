@@ -74,7 +74,10 @@ defmodule WhisprCalls.Workers.RoomReconciler do
           process_calls(active_calls, live_rooms)
 
         {:error, reason} ->
-          Logger.error("RoomReconciler: impossible de lister les rooms LiveKit: #{inspect(reason)}")
+          Logger.error(
+            "RoomReconciler: impossible de lister les rooms LiveKit: #{inspect(reason)}"
+          )
+
           :ok
       end
     end
