@@ -11,7 +11,9 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
     expires: 31_536_000,
     rewrite_on: [:x_forwarded_proto],
     exclude: [
-      # paths: ["/health"],
+      # Le kubelet sonde en HTTP depuis le noeud - exempter les probes evite
+      # les redirects 301 parasites dans les logs toutes les 10 s (WHISPR-1442).
+      paths: ["/health/live", "/health/ready"],
       hosts: ["localhost", "127.0.0.1"]
     ]
   ]
