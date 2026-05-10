@@ -53,6 +53,15 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # ================================
+  # Elixir SAST (mix_audit Hex CVE)
+  # ================================
+  elixir-sast:
+    name: 🛡️ Elixir SAST
+    uses: ./.github/workflows/elixir-sast.yml
+    with:
+      ref: ${{ github.ref }}
+
+  # ================================
   # Docker Build
   # ================================
   docker:

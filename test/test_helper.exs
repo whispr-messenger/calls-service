@@ -7,5 +7,14 @@ Mox.defmock(WhisprCalls.Grpc.MessagingClientMock, for: WhisprCalls.Grpc.Messagin
 # swap in MessagingClientMock explicitly.
 Application.put_env(:whispr_calls, :messaging_client, WhisprCalls.Grpc.MessagingClient.Stub)
 
+# Default events publisher in tests: broadcasts to Phoenix.PubSub so tests
+# can subscribe with `WhisprCalls.Events.PublisherTestRecorder.subscribe()`
+# and `assert_receive` published events. Avoids depending on a live Redis.
+Application.put_env(
+  :whispr_calls,
+  :events_publisher,
+  WhisprCalls.Events.PublisherTestRecorder
+)
+
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(WhisprCalls.Repo, :manual)

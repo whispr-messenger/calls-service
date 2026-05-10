@@ -18,26 +18,58 @@ defmodule WhisprCalls.Grpc.MessagingClient do
   @callback verify_membership(conversation_id :: String.t(), user_id :: String.t()) ::
               {:ok, :member} | {:error, :not_member | term()}
 
+  @callback list_members(conversation_id :: String.t()) ::
+              {:ok, :any | [String.t()]} | {:error, term()}
+
   @spec verify_membership(String.t(), String.t()) ::
           {:ok, :member} | {:error, :not_member | term()}
   def verify_membership(conversation_id, user_id) do
     impl().verify_membership(conversation_id, user_id)
   end
 
+  @spec list_members(String.t()) :: {:ok, :any | [String.t()]} | {:error, term()}
+  def list_members(conversation_id) do
+    impl().list_members(conversation_id)
+  end
+
+  # Pas de default fail-open: si la cle n est pas set en prod on raise plutot
+  # que de laisser le Stub renvoyer {:ok, :member} et faire passer tous les
+  # checks de membership silencieusement.
   defp impl do
-    Application.get_env(:whispr_calls, :messaging_client, __MODULE__.Stub)
+    case Application.get_env(:whispr_calls, :messaging_client) do
+      nil ->
+        if Application.get_env(:whispr_calls, :env) == :prod do
+          raise """
+          :messaging_client is not configured in production.
+          Set it in config/runtime.exs (e.g. WhisprCalls.Grpc.MessagingClient.HTTP)
+          before serving traffic. Without this, conversation membership checks
+          would silently pass for every user (privilege escalation).
+          """
+        else
+          __MODULE__.Stub
+        end
+
+      mod ->
+        mod
+    end
   end
 
   defmodule Stub do
     @moduledoc """
     Fallback used when messaging-service is not available (tests and dev).
     Always returns `{:ok, :member}` so the happy path works end-to-end.
+
+    `list_members/1` returns `{:ok, :any}` to signal "treat any user_id as
+    a valid member" so callers don't have to special-case the stub.
     """
 
     @behaviour WhisprCalls.Grpc.MessagingClient
 
     @impl true
     def verify_membership(_conversation_id, _user_id), do: {:ok, :member}
+
+    @impl true
+    def list_members(_conversation_id), do: {:ok, :any}
   end
 
   defmodule HTTP do
@@ -58,17 +90,36 @@ defmodule WhisprCalls.Grpc.MessagingClient do
 
     @impl true
     def verify_membership(conversation_id, user_id) do
+      case list_members(conversation_id) do
+        {:ok, members} when is_list(members) ->
+          if user_id in members, do: {:ok, :member}, else: {:error, :not_member}
+
+        {:error, :not_member} = err ->
+          err
+
+        {:error, _} = err ->
+          err
+      end
+    end
+
+    @impl true
+    def list_members(conversation_id) do
       base = Application.fetch_env!(:whispr_calls, :messaging_http_endpoint)
       token = Application.fetch_env!(:whispr_calls, :messaging_service_token)
 
       url = "#{base}/messaging/api/v1/conversations/#{conversation_id}/members"
 
-      case Req.get(url,
-             headers: [{"authorization", "Bearer #{token}"}],
-             receive_timeout: 2_000
-           ) do
+      req_opts =
+        [
+          url: url,
+          headers: [{"authorization", "Bearer #{token}"}],
+          receive_timeout: 2_000
+        ]
+        |> Keyword.merge(Application.get_env(:whispr_calls, :messaging_http_req_options, []))
+
+      case Req.get(req_opts) do
         {:ok, %{status: 200, body: body}} ->
-          if member_in_body?(body, user_id), do: {:ok, :member}, else: {:error, :not_member}
+          {:ok, extract_member_ids(body)}
 
         {:ok, %{status: 403}} ->
           {:error, :not_member}
@@ -86,18 +137,16 @@ defmodule WhisprCalls.Grpc.MessagingClient do
       end
     end
 
-    defp member_in_body?(%{"members" => members}, user_id) when is_list(members) do
-      Enum.any?(members, &member_match?(&1, user_id))
-    end
+    defp extract_member_ids(%{"members" => members}) when is_list(members),
+      do: Enum.flat_map(members, &member_id/1)
 
-    defp member_in_body?(members, user_id) when is_list(members) do
-      Enum.any?(members, &member_match?(&1, user_id))
-    end
+    defp extract_member_ids(members) when is_list(members),
+      do: Enum.flat_map(members, &member_id/1)
 
-    defp member_in_body?(_, _), do: false
+    defp extract_member_ids(_), do: []
 
-    defp member_match?(%{"user_id" => uid}, user_id), do: uid == user_id
-    defp member_match?(%{"userId" => uid}, user_id), do: uid == user_id
-    defp member_match?(_, _), do: false
+    defp member_id(%{"user_id" => uid}) when is_binary(uid), do: [uid]
+    defp member_id(%{"userId" => uid}) when is_binary(uid), do: [uid]
+    defp member_id(_), do: []
   end
 end

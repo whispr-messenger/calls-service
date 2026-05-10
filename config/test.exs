@@ -26,10 +26,14 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
   secret_key_base: "krMz6zrvCKT7XekiNeN2CPCh9YR3NHlf2a7gD9/R76gdsIzGCH1x2SirLzARJ3oJ",
   server: false
 
-# Skip the ringing-timeout worker under test: the SQL sandbox ownership
-# model doesn't play well with a GenServer checking out its own connection
-# on a 5s tick. Worker behaviour is covered directly in unit tests.
+# Skip les background workers sous test : le SQL sandbox ownership model
+# ne joue pas bien avec un GenServer qui checkout sa propre connection
+# sur un tick periodique. Le comportement est couvert par des unit tests dediees.
 config :whispr_calls, start_background_workers?: false
+
+# Le reconciler est desactive en test pour la meme raison.
+# Les tests unitaires instancient RoomReconciler.reconcile/0 directement.
+config :whispr_calls, reconciler_enabled: false
 
 # JWT signer used by authenticate plug in test env.
 # Stored as {algorithm, secret} and materialised into a Joken.Signer lazily
@@ -40,6 +44,11 @@ config :whispr_calls, jwt_signer: {"HS256", "test_secret"}
 # is never invoked (LiveKitClientMock takes over), but the public URL is
 # embedded into the response so clients know where to connect.
 config :whispr_calls, livekit_public_url: "wss://livekit.test"
+
+# Use the in-process Stub for messaging-service membership checks in test.
+# Individual tests that want to assert the not-member path swap in
+# `WhisprCalls.Grpc.MessagingClientMock` (defined in test_helper.exs).
+config :whispr_calls, messaging_client: WhisprCalls.Grpc.MessagingClient.Stub
 
 # Print only warnings and errors during test
 config :logger, level: :warning

@@ -30,6 +30,7 @@ defmodule WhisprCalls.Calls do
     participant_ids = Map.get(attrs, :participant_ids, [])
 
     with {:ok, :member} <- verify_conversation_membership(initiator_id, conversation_id),
+         :ok <- verify_invitees_are_members(conversation_id, participant_ids),
          room_name <- generate_room_name(),
          {:ok, _room} <- LiveKitClient.create_room(room_name, []),
          {:ok, %{call: call}} <-
@@ -55,30 +56,97 @@ defmodule WhisprCalls.Calls do
   """
   @spec accept_call(uuid(), uuid()) ::
           {:ok, Call.t(), %{token: String.t(), url: String.t()}}
-          | {:error, :not_invited | :call_not_found | :call_already_ended | term()}
+          | {:error,
+             :not_invited
+             | :call_not_found
+             | :call_already_ended
+             | :call_not_ringing
+             | :participant_not_invited
+             | term()}
   def accept_call(call_id, user_id) do
-    with {:ok, call} <- fetch_call(call_id),
-         :ok <- ensure_call_active(call),
-         {:ok, participant} <- fetch_participant(call_id, user_id),
-         {:ok, %{call: updated_call}} <- mark_participant_joined(call, participant),
-         {:ok, token} <- LiveKitClient.generate_access_token(user_id, call.livekit_room, []) do
-      track_active_participant(updated_call, user_id)
+    # verrou FOR UPDATE pour serialiser les accept concurrents (group call)
+    case Repo.transaction(accept_call_multi(call_id, user_id)) do
+      {:ok, %{call: updated_call}} ->
+        with {:ok, token} <-
+               LiveKitClient.generate_access_token(user_id, updated_call.livekit_room, []) do
+          track_active_participant(updated_call, user_id)
 
-      _ =
-        Publisher.publish("whispr:calls:accepted", %{
-          call_id: updated_call.id,
-          user_id: user_id,
-          accepted_at: DateTime.to_iso8601(DateTime.utc_now())
-        })
+          _ =
+            Publisher.publish("whispr:calls:accepted", %{
+              call_id: updated_call.id,
+              user_id: user_id,
+              accepted_at: DateTime.to_iso8601(DateTime.utc_now())
+            })
 
-      {:ok, updated_call, %{token: token, url: livekit_public_url()}}
+          {:ok, updated_call, %{token: token, url: livekit_public_url()}}
+        end
+
+      {:error, _step, reason, _changes} ->
+        {:error, reason}
     end
   end
 
-  defp ensure_call_active(%Call{status: status}) when status in ["ended", "missed", "declined"],
-    do: {:error, :call_already_ended}
+  # Construit la transaction qui pose un FOR UPDATE sur la row Call,
+  # revalide le statut sous lock, charge le participant et applique les
+  # updates dans la meme transaction. Garantit qu un seul accept passe le
+  # call de "ringing" a "connected" sur un appel de groupe.
+  defp accept_call_multi(call_id, user_id) do
+    Multi.new()
+    |> Multi.run(:locked_call, fn repo, _ ->
+      case repo.get(Call, call_id, lock: "FOR UPDATE") do
+        nil -> {:error, :call_not_found}
+        %Call{} = call -> {:ok, call}
+      end
+    end)
+    |> Multi.run(:check_ringing, fn _repo, %{locked_call: call} ->
+      case ensure_call_ringing(call) do
+        :ok -> {:ok, :ringing}
+        err -> err
+      end
+    end)
+    |> Multi.run(:participant, fn repo, _ ->
+      case repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
+        nil -> {:error, :not_invited}
+        %CallParticipant{} = p -> {:ok, p}
+      end
+    end)
+    |> Multi.run(:check_invited, fn _repo, %{participant: p} ->
+      case ensure_participant_invited(p) do
+        :ok -> {:ok, :invited}
+        err -> err
+      end
+    end)
+    |> Multi.run(:joined, fn repo, %{participant: participant} ->
+      now = DateTime.utc_now()
 
-  defp ensure_call_active(_), do: :ok
+      with {:ok, _} <-
+             participant
+             |> CallParticipant.changeset(%{status: "joined", joined_at: now})
+             |> repo.update() do
+        {:ok, now}
+      end
+    end)
+    |> Multi.run(:call, fn repo, %{locked_call: call, joined: now} ->
+      call
+      |> Call.changeset(call_connected_attrs(call, now))
+      |> repo.update()
+    end)
+  end
+
+  # Only a ringing call can be accepted or declined. Already-terminal statuses
+  # (ended/missed/declined/failed) collapse to :call_already_ended so the
+  # controller maps them to 410 Gone semantics, while in-progress statuses
+  # (connected) yield :call_not_ringing for 409 Conflict.
+  defp ensure_call_ringing(%Call{status: "ringing"}), do: :ok
+
+  defp ensure_call_ringing(%Call{status: status})
+       when status in ["ended", "missed", "declined", "failed"],
+       do: {:error, :call_already_ended}
+
+  defp ensure_call_ringing(_), do: {:error, :call_not_ringing}
+
+  defp ensure_participant_invited(%CallParticipant{status: "invited"}), do: :ok
+  defp ensure_participant_invited(_), do: {:error, :participant_not_invited}
 
   @doc """
   Declines a ringing call: flips the participant status to `declined`.
@@ -87,13 +155,12 @@ defmodule WhisprCalls.Calls do
   @spec decline_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def decline_call(call_id, user_id) do
     with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id) do
+         :ok <- ensure_call_ringing(call),
+         {:ok, participant} <- fetch_participant(call_id, user_id),
+         :ok <- ensure_participant_invited(participant) do
       finalize_decline(call, participant, user_id)
     end
   end
-
-  # Declining an already-ended call is a no-op.
-  defp finalize_decline(%Call{status: "ended"} = call, _participant, _user_id), do: {:ok, call}
 
   defp finalize_decline(%Call{} = call, %CallParticipant{} = participant, user_id) do
     with {:ok, _updated} <-
@@ -118,39 +185,101 @@ defmodule WhisprCalls.Calls do
   """
   @spec end_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def end_call(call_id, user_id) do
-    with {:ok, call} <- fetch_call(call_id),
-         {:ok, participant} <- fetch_participant(call_id, user_id) do
-      finalize_end_call(call, participant)
+    # verrou FOR UPDATE pour serialiser les leave concurrents en groupe.
+    # Sans lock, deux leaves quasi-simultanes peuvent observer un etat
+    # intermediaire et soit double-finaliser (race vers all_left), soit
+    # laisser le call en "connected" alors que plus personne n est actif.
+    case Repo.transaction(end_call_multi(call_id, user_id)) do
+      {:ok, %{result: {:ok, call}}} -> {:ok, call}
+      {:ok, %{result: {:error, reason}}} -> {:error, reason}
+      {:error, _step, reason, _changes} -> {:error, reason}
     end
   end
 
-  # Calling end_call on an already-ended call is a no-op: participant status
-  # is preserved, no additional Redis event is published and the LiveKit room
-  # is not re-deleted.
-  defp finalize_end_call(%Call{status: "ended"} = call, _participant), do: {:ok, call}
+  defp end_call_multi(call_id, user_id) do
+    Multi.new()
+    |> Multi.run(:locked_call, fn repo, _ ->
+      case repo.get(Call, call_id, lock: "FOR UPDATE") do
+        nil -> {:error, :call_not_found}
+        %Call{} = call -> {:ok, call}
+      end
+    end)
+    |> Multi.run(:participant, fn repo, _ ->
+      case repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
+        nil -> {:error, :not_invited}
+        %CallParticipant{} = participant -> {:ok, participant}
+      end
+    end)
+    |> Multi.run(:result, fn repo, %{locked_call: call, participant: participant} ->
+      finalize_end_call_locked(repo, call, participant)
+    end)
+  end
 
-  defp finalize_end_call(%Call{} = call, %CallParticipant{} = participant) do
+  # Idempotent : si le call est deja "ended" (autre leave a deja finalise
+  # sous le lock), on retourne {:ok, call} sans toucher au participant
+  # ni republier d evenement.
+  defp finalize_end_call_locked(_repo, %Call{status: "ended"} = call, _participant) do
+    {:ok, {:ok, call}}
+  end
+
+  defp finalize_end_call_locked(repo, %Call{} = call, %CallParticipant{} = participant) do
     with {:ok, _updated} <-
            participant
            |> CallParticipant.changeset(%{status: "left", left_at: DateTime.utc_now()})
-           |> Repo.update() do
-      finalize_or_continue(call)
+           |> repo.update() do
+      _ = publish_participant_left(call, participant.user_id)
+      {:ok, finalize_or_continue(repo, call)}
     end
   end
 
-  defp finalize_or_continue(%Call{} = call) do
-    if has_active_participants?(call.id) do
-      {:ok, call}
-    else
-      finalize_call(call, "all_left")
+  # In a 1v1 call (initiator + 1 invitee), end the call as soon as ONE
+  # participant leaves. Otherwise (group call), keep the call alive until
+  # all active participants have left. This avoids the bug where peer B
+  # remains stuck on the LiveKit room after peer A hangs up.
+  #
+  # Appele sous le lock FOR UPDATE de la row Call : les requetes
+  # one_to_one?/any_participant_left?/has_active_participants? observent
+  # un snapshot stable, plus de race d interleaving sur les leave groupe.
+  defp finalize_or_continue(repo, %Call{} = call) do
+    cond do
+      one_to_one?(repo, call) and any_participant_left?(repo, call.id) ->
+        finalize_call(call, "peer_left")
+
+      has_active_participants?(repo, call.id) ->
+        {:ok, call}
+
+      true ->
+        finalize_call(call, "all_left")
     end
   end
 
-  defp has_active_participants?(call_id) do
-    Repo.exists?(
+  defp has_active_participants?(repo, call_id) do
+    repo.exists?(
       from p in CallParticipant,
         where: p.call_id == ^call_id and p.status == "joined"
     )
+  end
+
+  defp any_participant_left?(repo, call_id) do
+    repo.exists?(
+      from p in CallParticipant,
+        where: p.call_id == ^call_id and p.status == "left"
+    )
+  end
+
+  defp one_to_one?(repo, %Call{id: call_id, type: type}) when type in ["audio", "video"] do
+    repo.aggregate(from(p in CallParticipant, where: p.call_id == ^call_id), :count) == 2
+  end
+
+  defp one_to_one?(_repo, _), do: false
+
+  defp publish_participant_left(%Call{} = call, user_id) do
+    Publisher.publish("whispr:calls:participant_left", %{
+      call_id: call.id,
+      conversation_id: call.conversation_id,
+      user_id: user_id,
+      left_at: DateTime.to_iso8601(DateTime.utc_now())
+    })
   end
 
   defp finalize_call(%Call{} = call, reason) do
@@ -167,7 +296,15 @@ defmodule WhisprCalls.Calls do
       })
       |> Repo.update()
 
+    # Revoke explicite des tokens LiveKit avant de delete la room (WHISPR-1363).
+    # Defense en profondeur : meme si un attaquant a sniff un token (TTL 120s),
+    # on kick chaque participant cote SFU des qu un end_call est emis.
+    # delete_room couvre normalement deja ce cas mais le revoke individuel
+    # protege le narrow window entre le moment ou un peer leave et le moment
+    # ou la room finalizes (group call avec un seul leave avant la fin).
+    _ = revoke_all_participants(call)
     _ = LiveKitClient.delete_room(call.livekit_room)
+    _ = cleanup_active_participants(call)
 
     _ =
       Publisher.publish("whispr:calls:ended", %{
@@ -180,14 +317,49 @@ defmodule WhisprCalls.Calls do
     {:ok, updated}
   end
 
+  # Iterates sur tous les participants connus du call pour les kick LiveKit.
+  # Ignore les erreurs individuelles : on est dans le finalize, le delete_room
+  # qui suit fait office de filet de securite.
+  defp revoke_all_participants(%Call{id: call_id, livekit_room: room}) when is_binary(room) do
+    CallParticipant
+    |> where([p], p.call_id == ^call_id)
+    |> select([p], p.user_id)
+    |> Repo.all()
+    |> Enum.each(fn user_id ->
+      _ = LiveKitClient.revoke_participant(room, user_id)
+    end)
+  end
+
+  defp revoke_all_participants(_), do: :ok
+
+  # The Redis set `calls:{room}:participants` is populated by
+  # `track_active_participant/2` on each accept. It's kept around for ad-hoc
+  # debugging (who is currently in the room) but the lifecycle is bounded:
+  # we drop the key here when the call is finalized so the keyspace doesn't
+  # grow forever.
+  defp cleanup_active_participants(%Call{livekit_room: room}) when is_binary(room) do
+    case Redix.command(:redix, ["DEL", "calls:#{room}:participants"]) do
+      {:ok, _} -> :ok
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp cleanup_active_participants(_), do: :ok
+
   @doc """
   Returns calls in which `user_id` is a participant. Supports optional
-  filters: `:status`, `:conversation_id`, `:limit` (default 50).
-  Ordered by `started_at` desc.
+  filters: `:status`, `:conversation_id`, `:limit` (default 50),
+  `:offset` (default 0). Ordered by `started_at` desc.
+
+  The controller is responsible for clamping `:limit` and `:offset` to
+  safe bounds before they reach this function.
   """
   @spec list_user_calls(uuid(), map()) :: [Call.t()]
   def list_user_calls(user_id, filters \\ %{}) do
     limit = Map.get(filters, :limit, 50)
+    offset = Map.get(filters, :offset, 0)
 
     query =
       from c in Call,
@@ -195,7 +367,8 @@ defmodule WhisprCalls.Calls do
         on: p.call_id == c.id,
         where: p.user_id == ^user_id,
         order_by: [desc: c.started_at],
-        limit: ^limit
+        limit: ^limit,
+        offset: ^offset
 
     query
     |> maybe_filter_status(filters)
@@ -273,24 +446,6 @@ defmodule WhisprCalls.Calls do
       nil -> {:error, :not_invited}
       %CallParticipant{} = participant -> {:ok, participant}
     end
-  end
-
-  defp mark_participant_joined(%Call{} = call, %CallParticipant{} = participant) do
-    now = DateTime.utc_now()
-
-    Multi.new()
-    |> Multi.update(
-      :participant,
-      CallParticipant.changeset(participant, %{
-        status: "joined",
-        joined_at: now
-      })
-    )
-    |> Multi.update(
-      :call,
-      Call.changeset(call, call_connected_attrs(call, now))
-    )
-    |> Repo.transaction()
   end
 
   defp call_connected_attrs(%Call{status: "ringing"} = _call, now) do
@@ -378,5 +533,31 @@ defmodule WhisprCalls.Calls do
   # the gRPC client) hits messaging-service.
   defp verify_conversation_membership(user_id, conversation_id) do
     MessagingClient.verify_membership(conversation_id, user_id)
+  end
+
+  # Validates that every invited participant actually belongs to the
+  # conversation. Without this, a malicious client could make us ring users
+  # who never opted into the conversation.
+  #
+  # Uses a single `list_members/1` round-trip rather than N
+  # `verify_membership/2` calls. The Stub returns `{:ok, :any}` so dev/test
+  # short-circuit to `:ok` without inspecting member IDs.
+  defp verify_invitees_are_members(_conversation_id, []), do: :ok
+
+  defp verify_invitees_are_members(conversation_id, participant_ids) do
+    case MessagingClient.list_members(conversation_id) do
+      {:ok, :any} ->
+        :ok
+
+      {:ok, members} when is_list(members) ->
+        if MapSet.subset?(MapSet.new(participant_ids), MapSet.new(members)) do
+          :ok
+        else
+          {:error, :invitee_not_member}
+        end
+
+      {:error, _} ->
+        {:error, :invitee_not_member}
+    end
   end
 end

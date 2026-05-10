@@ -33,6 +33,7 @@ defmodule WhisprCallsWeb.ConnCase do
 
   setup tags do
     WhisprCalls.DataCase.setup_sandbox(tags)
+    WhisprCalls.DataCase.stub_default_livekit_revoke()
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

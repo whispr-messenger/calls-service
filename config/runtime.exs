@@ -20,8 +20,22 @@ if System.get_env("PHX_SERVER") do
   config :whispr_calls, WhisprCallsWeb.Endpoint, server: true
 end
 
+# Mirror the compile-time env into application config so runtime code
+# (e.g. fail-closed checks in controllers) can branch on it without
+# pulling Mix at runtime.
+config :whispr_calls, env: config_env()
+
 config :whispr_calls, WhisprCallsWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+
+# WebSocket origin check (WHISPR-1354). En prod on resoud via MFA pour
+# whitelister CORS_ALLOWED_ORIGINS au lieu de garder le `false` permissif
+# herite de dev. Le risque sinon : un site tiers peut initier des appels
+# LiveKit cross-origin si un user authentifie visite la page.
+if config_env() == :prod do
+  config :whispr_calls, WhisprCallsWeb.Endpoint,
+    check_origin: {WhisprCallsWeb.Endpoint, :ws_check_origin, []}
+end
 
 # Redis connection URL: prefer a full REDIS_URL, otherwise compose REDIS_HOST
 # + REDIS_PORT (used by the docker test stack and the Kubernetes manifests).
@@ -31,13 +45,60 @@ config :whispr_calls,
       "redis://#{System.get_env("REDIS_HOST", "localhost")}:#{System.get_env("REDIS_PORT", "6379")}"
 
 # LiveKit webhook secret (HMAC verification on /calls/webhooks/livekit).
-# When unset, signature verification is skipped so dev environments keep
-# working. Set this in preprod/prod once the webhook is provisioned.
-if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
-  config :whispr_calls, livekit_webhook_secret: secret
+# Required when the Phoenix server boots in prod (controller fails-closed
+# with 503 if missing). Skipped for `eval` tasks (e.g. Release.migrate()
+# which runs from the same image without PHX_SERVER set).
+if config_env() == :prod and System.get_env("PHX_SERVER") do
+  config :whispr_calls,
+    livekit_webhook_secret:
+      System.get_env("LIVEKIT_WEBHOOK_SECRET") ||
+        raise("""
+        environment variable LIVEKIT_WEBHOOK_SECRET is missing.
+        It must match the webhook secret configured on the LiveKit server
+        so we can verify signed webhooks instead of accepting spoofed events.
+        """)
+else
+  if secret = System.get_env("LIVEKIT_WEBHOOK_SECRET") do
+    config :whispr_calls, livekit_webhook_secret: secret
+  end
+end
+
+# LiveKit API credentials + SFU URL consumed by
+# `WhisprCalls.Calls.LiveKitClientHTTP` (create_room / delete_room / token
+# generation). Without these the controller raises `ArgumentError` on the
+# first authenticated POST /calls.
+if key = System.get_env("LIVEKIT_API_KEY") do
+  config :whispr_calls, livekit_api_key: key
+end
+
+if secret = System.get_env("LIVEKIT_API_SECRET") do
+  config :whispr_calls, livekit_api_secret: secret
+end
+
+if url = System.get_env("LIVEKIT_API_URL") do
+  config :whispr_calls, livekit_api_url: url
+end
+
+# Public WSS URL returned to clients in `create_call`. Defaults to the
+# placeholder `wss://livekit.whispr.local` when unset; set this so mobile
+# clients can reach the SFU.
+if public_url = System.get_env("LIVEKIT_PUBLIC_URL") do
+  config :whispr_calls, livekit_public_url: public_url
+end
+
+# Intervalle du reconciler rooms LiveKit (defaut 5 min = 300 000 ms).
+# Peut etre surcharge via env var RECONCILER_INTERVAL_MS pour les envs
+# qui ont besoin d un cycle plus court (ex: preprod de debug).
+if interval = System.get_env("RECONCILER_INTERVAL_MS") do
+  config :whispr_calls, reconciler_interval_ms: String.to_integer(interval)
 end
 
 if config_env() == :prod do
+  # fail-loud sur env critique au boot, peu importe PHX_SERVER. Migration-only
+  # pods, IEx et health probe containers doivent aussi crash plutot que de
+  # booter avec un secret_key_base nil silencieux.
+  secret_key_base = System.fetch_env!("SECRET_KEY_BASE")
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """
@@ -54,18 +115,6 @@ if config_env() == :prod do
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6
-
-  # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
 
   host = System.get_env("PHX_HOST") || "example.com"
 
@@ -114,9 +163,27 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # JWKS URL used by the JWT authenticate plug to verify tokens issued by
-  # the auth-service. The strategy module (WhisprCalls.JwksStrategy) reads
-  # this at runtime.
-  config :whispr_calls,
-    jwks_url: System.fetch_env!("JWT_JWKS_URL")
+  # Web-server-only configuration: JWKS URL (consumed by the JWT plug on
+  # incoming HTTP requests) and the HTTP messaging client (used by the
+  # /calls controller for conversation membership checks). Gated on
+  # PHX_SERVER so `eval` tasks (e.g. Release.migrate()) running from the
+  # same image don't require these vars at boot.
+  if System.get_env("PHX_SERVER") do
+    config :whispr_calls,
+      jwks_url: System.fetch_env!("JWT_JWKS_URL"),
+      messaging_client: WhisprCalls.Grpc.MessagingClient.HTTP,
+      messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
+      messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
+
+    # Validation optionnelle de iss / aud sur les JWT entrants. Si auth-service
+    # emet ces claims, les enforcer ici evite qu un token destine a un autre
+    # service (ex: media) soit accepte par calls-service.
+    if iss = System.get_env("JWT_EXPECTED_ISSUER") do
+      config :whispr_calls, jwt_expected_issuer: iss
+    end
+
+    if aud = System.get_env("JWT_EXPECTED_AUDIENCE") do
+      config :whispr_calls, jwt_expected_audience: aud
+    end
+  end
 end
