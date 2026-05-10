@@ -14,4 +14,9 @@ defmodule WhisprCallsWeb.UserChannel do
       {:error, %{reason: "unauthorized"}}
     end
   end
+
+  # Catch-all: an unknown event must not crash the channel process and
+  # disconnect the client. Silently ignore.
+  @impl true
+  def handle_in(_event, _payload, socket), do: {:noreply, socket}
 end

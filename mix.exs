@@ -47,7 +47,7 @@ defmodule WhisprCalls.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:phoenix, "~> 1.8.5"},
+      {:phoenix, "~> 1.8.6"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
@@ -55,13 +55,21 @@ defmodule WhisprCalls.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.4"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.11.0"},
       {:dns_cluster, "~> 0.2.0"},
       {:redix, "~> 1.5"},
       {:joken, "~> 2.6"},
       {:joken_jwks, "~> 1.6"},
+      # HTTP adapter backing Tesla — joken_jwks uses Tesla to fetch the
+      # auth-service JWKS. Without a concrete adapter Tesla falls back to
+      # :httpc which doesn't honour our SSL config consistently.
+      {:hackney, "~> 1.20"},
       {:req, "~> 0.5"},
       {:oban, "~> 2.17"},
+      # Rate limiter ETS-backed (WHISPR-1363). Utilise par le plug
+      # WhisprCallsWeb.Plugs.RateLimitCallCreation pour brider POST /calls
+      # a 5/min/user et eviter le flood notifs + facture LiveKit.
+      {:hammer, "~> 6.2"},
       {:prom_ex, "~> 1.11"},
       {:logger_json, "~> 6.0"},
       {:gettext, "~> 1.0"},
@@ -69,7 +77,8 @@ defmodule WhisprCalls.MixProject do
       {:floki, ">= 0.30.0", only: :test},
       {:excoveralls, "~> 0.18", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
     ]
   end
 

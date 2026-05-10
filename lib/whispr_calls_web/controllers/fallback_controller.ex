@@ -6,6 +6,8 @@ defmodule WhisprCallsWeb.FallbackController do
   """
   use Phoenix.Controller, formats: [:json]
 
+  require Logger
+
   def call(conn, {:error, :not_found}),
     do: conn |> put_status(404) |> json(%{error: "not_found"})
 
@@ -24,11 +26,20 @@ defmodule WhisprCallsWeb.FallbackController do
   def call(conn, {:error, :not_member}),
     do: conn |> put_status(403) |> json(%{error: "not_member"})
 
+  def call(conn, {:error, :invitee_not_member}),
+    do: conn |> put_status(403) |> json(%{error: "invitee_not_member"})
+
   def call(conn, {:error, :already_joined_or_declined}),
     do: conn |> put_status(409) |> json(%{error: "already_resolved"})
 
   def call(conn, {:error, :call_already_ended}),
-    do: conn |> put_status(409) |> json(%{error: "call_already_ended"})
+    do: conn |> put_status(410) |> json(%{error: "call_already_ended"})
+
+  def call(conn, {:error, :call_not_ringing}),
+    do: conn |> put_status(409) |> json(%{error: "call_not_ringing"})
+
+  def call(conn, {:error, :participant_not_invited}),
+    do: conn |> put_status(409) |> json(%{error: "participant_not_invited"})
 
   def call(conn, {:error, :invalid_request}),
     do: conn |> put_status(422) |> json(%{error: "invalid_request"})
@@ -37,6 +48,8 @@ defmodule WhisprCallsWeb.FallbackController do
     do: conn |> put_status(422) |> json(%{error: "validation_failed"})
 
   def call(conn, {:error, reason}) do
-    conn |> put_status(500) |> json(%{error: inspect(reason)})
+    # ne jamais exposer la raison brute aux clients (pourrait fuiter struct/PID/atom interne)
+    Logger.error("unhandled fallback error: #{inspect(reason)}")
+    conn |> put_status(500) |> json(%{error: "internal_server_error"})
   end
 end

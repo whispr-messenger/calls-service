@@ -7,6 +7,11 @@ defmodule WhisprCalls.Application do
 
   @impl true
   def start(_type, _args) do
+    # Fail-fast: refuser de booter en prod si :messaging_client n est pas
+    # configure. Sinon le default tomberait sur le Stub qui renvoie
+    # {:ok, :member} pour tout le monde => privilege escalation silencieuse.
+    assert_messaging_client_configured!()
+
     children =
       [
         WhisprCallsWeb.Telemetry,
@@ -36,7 +41,7 @@ defmodule WhisprCalls.Application do
   # with a ticking worker that would check out connections on its own.
   defp workers do
     if Application.get_env(:whispr_calls, :start_background_workers?, true) do
-      [WhisprCalls.Workers.RingingTimeoutWorker]
+      [WhisprCalls.Workers.RingingTimeoutWorker, WhisprCalls.Workers.RoomReconciler]
     else
       []
     end
@@ -49,6 +54,34 @@ defmodule WhisprCalls.Application do
     case Application.get_env(:whispr_calls, :jwt_signer) do
       WhisprCalls.JwksStrategy -> [WhisprCalls.JwksStrategy]
       _ -> []
+    end
+  end
+
+  # En prod le Stub fail-open n est jamais acceptable: il renverrait
+  # {:ok, :member} pour n importe quelle paire (user, conversation) et
+  # contournerait la verification de membership. On exige une impl explicite
+  # (typiquement WhisprCalls.Grpc.MessagingClient.HTTP wired en runtime.exs).
+  defp assert_messaging_client_configured! do
+    if Application.get_env(:whispr_calls, :env) == :prod do
+      case Application.get_env(:whispr_calls, :messaging_client) do
+        nil ->
+          raise """
+          :messaging_client is not configured in production.
+          Set it in config/runtime.exs (e.g. WhisprCalls.Grpc.MessagingClient.HTTP)
+          before serving traffic. Without this, conversation membership checks
+          would silently pass for every user (privilege escalation).
+          """
+
+        WhisprCalls.Grpc.MessagingClient.Stub ->
+          raise """
+          :messaging_client is set to the Stub in production.
+          The Stub returns {:ok, :member} for everyone and must never be used
+          outside :dev / :test. Use WhisprCalls.Grpc.MessagingClient.HTTP.
+          """
+
+        _ ->
+          :ok
+      end
     end
   end
 

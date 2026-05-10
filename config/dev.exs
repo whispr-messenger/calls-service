@@ -20,6 +20,10 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
+  # check_origin: false uniquement en dev pour ne pas casser le tooling local
+  # (Expo web sur des ports varies, curl, Postman). En prod, l'override MFA
+  # dans WhisprCallsWeb.Endpoint.ws_check_origin/1 prend le relais via
+  # CORS_ALLOWED_ORIGINS (WHISPR-1354).
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
@@ -51,6 +55,11 @@ config :whispr_calls, WhisprCallsWeb.Endpoint,
 
 # Enable dev routes for dashboard and mailbox
 config :whispr_calls, dev_routes: true
+
+# Use the in-process Stub for messaging-service membership checks in dev:
+# we don't always have a reachable messaging-service. Prod wires the HTTP
+# client in config/runtime.exs.
+config :whispr_calls, messaging_client: WhisprCalls.Grpc.MessagingClient.Stub
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
