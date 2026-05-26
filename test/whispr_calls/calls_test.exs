@@ -660,6 +660,43 @@ defmodule WhisprCalls.CallsTest do
     end
   end
 
+  describe "decline_call/2 race condition (concurrent decline + accept)" do
+    # decline_call utilise maintenant un FOR UPDATE identique a accept_call.
+    # On teste qu un decline et un accept concurrents ne produisent pas un
+    # etat incoherent sur le participant.
+    test "decline concurrent avec accept -> un seul gagne, etat coherent" do
+      {_initiator, invitee, call} = seed_ringing_call()
+
+      Mox.set_mox_global()
+
+      stub(LiveKitClientMock, :generate_access_token, fn _uid, _room, _opts ->
+        {:ok, "tok"}
+      end)
+
+      parent = self()
+
+      tasks = [
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+          Calls.decline_call(call.id, invitee)
+        end),
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+          Calls.accept_call(call.id, invitee)
+        end)
+      ]
+
+      results = Task.await_many(tasks, 5_000)
+
+      successes = Enum.count(results, fn r -> match?({:ok, _, _}, r) or match?({:ok, _}, r) end)
+      assert successes == 1
+
+      # Le participant est dans un etat terminal coherent (declined ou joined)
+      participant = Repo.get_by!(CallParticipant, call_id: call.id, user_id: invitee)
+      assert participant.status in ["declined", "joined"]
+    end
+  end
+
   describe "finalize_call revoke_participant" do
     test "kick chaque participant LiveKit avant delete_room (WHISPR-1363)" do
       {initiator, invitee, call} = seed_connected_call()
