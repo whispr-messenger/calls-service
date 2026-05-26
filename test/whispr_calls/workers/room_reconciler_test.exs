@@ -133,4 +133,24 @@ defmodule WhisprCalls.Workers.RoomReconcilerTest do
     assert Process.alive?(pid)
     GenServer.stop(pid)
   end
+
+  test "finalize_orphan est idempotent : call deja ended n est pas re-finalise" do
+    # Simule la race reconciler + end_call concurrent : le call est deja
+    # "ended" quand finalize_orphan acquiert le FOR UPDATE. Doit skip.
+    orphan = insert_old_active_call("connected")
+
+    # Marquer le call comme ended avant la passe reconciler.
+    {:ok, _} =
+      orphan
+      |> Call.changeset(%{status: "ended", ended_at: DateTime.utc_now(), end_reason: "peer_left"})
+      |> Repo.update()
+
+    # Le reconciler ne doit pas changer l end_reason.
+    Mox.expect(LiveKitClientMock, :list_rooms, fn -> {:ok, []} end)
+    RoomReconciler.reconcile()
+
+    reloaded = Repo.get!(Call, orphan.id)
+    assert reloaded.status == "ended"
+    assert reloaded.end_reason == "peer_left"
+  end
 end

@@ -62,14 +62,33 @@ defmodule WhisprCalls.Workers.RingingTimeoutWorker do
   end
 
   defp mark_missed(%Call{} = call) do
-    case call
-         |> Call.changeset(%{
-           status: "missed",
-           ended_at: DateTime.utc_now(),
-           end_reason: "timeout"
-         })
-         |> Repo.update() do
-      {:ok, updated} ->
+    # Guard optimiste sur status="ringing" dans le WHERE de l UPDATE.
+    # Evite d ecraser un call qui est passe "connected" (accept reussi)
+    # dans la fenetre entre le Repo.all du tick et ce Repo.update.
+    # Si la row a change (0 rows updated), on retourne :ok silencieusement.
+    result =
+      Repo.transaction(fn ->
+        locked =
+          Repo.get_by(Call, id: call.id, status: "ringing")
+
+        if locked do
+          locked
+          |> Call.changeset(%{
+            status: "missed",
+            ended_at: DateTime.utc_now(),
+            end_reason: "timeout"
+          })
+          |> Repo.update()
+        else
+          {:ok, :already_transitioned}
+        end
+      end)
+
+    case result do
+      {:ok, {:ok, :already_transitioned}} ->
+        :ok
+
+      {:ok, {:ok, updated}} ->
         _ =
           Publisher.publish("whispr:calls:missed", %{
             call_id: updated.id,
@@ -79,9 +98,13 @@ defmodule WhisprCalls.Workers.RingingTimeoutWorker do
 
         {:ok, updated}
 
-      {:error, changeset} ->
+      {:ok, {:error, changeset}} ->
         Logger.warning("failed to mark call missed: #{inspect(changeset.errors)}")
         {:error, changeset}
+
+      {:error, reason} ->
+        Logger.warning("failed to mark call missed (tx): #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
