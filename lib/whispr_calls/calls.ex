@@ -154,19 +154,48 @@ defmodule WhisprCalls.Calls do
   """
   @spec decline_call(uuid(), uuid()) :: {:ok, Call.t()} | {:error, atom()}
   def decline_call(call_id, user_id) do
-    with {:ok, call} <- fetch_call(call_id),
-         :ok <- ensure_call_ringing(call),
-         {:ok, participant} <- fetch_participant(call_id, user_id),
-         :ok <- ensure_participant_invited(participant) do
-      finalize_decline(call, participant, user_id)
+    # verrou FOR UPDATE pour serialiser decline / accept concurrents.
+    # Sans lock, un decline et un accept simultanes peuvent tous les deux
+    # passer les guards sur un snapshot "ringing" stale et ecrire des
+    # statuts contradictoires sur le participant.
+    case Repo.transaction(decline_call_multi(call_id, user_id)) do
+      {:ok, %{call: call}} -> {:ok, call}
+      {:error, _step, reason, _changes} -> {:error, reason}
     end
   end
 
-  defp finalize_decline(%Call{} = call, %CallParticipant{} = participant, user_id) do
-    with {:ok, _updated} <-
-           participant
-           |> CallParticipant.changeset(%{status: "declined"})
-           |> Repo.update() do
+  defp decline_call_multi(call_id, user_id) do
+    Multi.new()
+    |> Multi.run(:locked_call, fn repo, _ ->
+      case repo.get(Call, call_id, lock: "FOR UPDATE") do
+        nil -> {:error, :call_not_found}
+        %Call{} = call -> {:ok, call}
+      end
+    end)
+    |> Multi.run(:check_ringing, fn _repo, %{locked_call: call} ->
+      case ensure_call_ringing(call) do
+        :ok -> {:ok, :ringing}
+        err -> err
+      end
+    end)
+    |> Multi.run(:participant, fn repo, _ ->
+      case repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
+        nil -> {:error, :not_invited}
+        %CallParticipant{} = p -> {:ok, p}
+      end
+    end)
+    |> Multi.run(:check_invited, fn _repo, %{participant: p} ->
+      case ensure_participant_invited(p) do
+        :ok -> {:ok, :invited}
+        err -> err
+      end
+    end)
+    |> Multi.run(:declined, fn repo, %{participant: participant} ->
+      participant
+      |> CallParticipant.changeset(%{status: "declined"})
+      |> repo.update()
+    end)
+    |> Multi.run(:call, fn _repo, %{locked_call: call} ->
       _ =
         Publisher.publish("whispr:calls:declined", %{
           call_id: call.id,
@@ -175,7 +204,7 @@ defmodule WhisprCalls.Calls do
         })
 
       {:ok, call}
-    end
+    end)
   end
 
   @doc """
@@ -414,10 +443,31 @@ defmodule WhisprCalls.Calls do
   """
   @spec handle_room_finished(String.t()) :: {:ok, Call.t()} | {:error, :not_found}
   def handle_room_finished(livekit_room) when is_binary(livekit_room) do
-    case Repo.get_by(Call, livekit_room: livekit_room) do
-      nil -> {:error, :not_found}
-      %Call{status: "ended"} = call -> {:ok, call}
-      %Call{} = call -> finalize_call(call, "room_finished")
+    # FOR UPDATE pour eviter la double-finalisation si un end_call concurrent
+    # (client DELETE ou webhook participant_left) arrive en meme temps.
+    result =
+      Repo.transaction(fn ->
+        case Repo.get_by(Call, livekit_room: livekit_room) do
+          nil ->
+            {:error, :not_found}
+
+          %Call{status: "ended"} = call ->
+            {:ok, call}
+
+          %Call{} = call ->
+            locked = Repo.get(Call, call.id, lock: "FOR UPDATE")
+
+            if locked.status == "ended" do
+              {:ok, locked}
+            else
+              finalize_call(locked, "room_finished")
+            end
+        end
+      end)
+
+    case result do
+      {:ok, inner} -> inner
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -431,20 +481,6 @@ defmodule WhisprCalls.Calls do
     case Repo.get_by(Call, livekit_room: livekit_room) do
       nil -> {:error, :not_found}
       %Call{} = call -> end_call(call.id, user_id)
-    end
-  end
-
-  defp fetch_call(call_id) do
-    case Repo.get(Call, call_id) do
-      nil -> {:error, :call_not_found}
-      %Call{} = call -> {:ok, call}
-    end
-  end
-
-  defp fetch_participant(call_id, user_id) do
-    case Repo.get_by(CallParticipant, call_id: call_id, user_id: user_id) do
-      nil -> {:error, :not_invited}
-      %CallParticipant{} = participant -> {:ok, participant}
     end
   end
 

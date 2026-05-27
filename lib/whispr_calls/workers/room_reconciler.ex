@@ -114,26 +114,44 @@ defmodule WhisprCalls.Workers.RoomReconciler do
   end
 
   defp finalize_orphan(%Call{} = call) do
-    now = DateTime.utc_now()
-    duration = DateTime.diff(now, call.connected_at || call.started_at, :second)
-
+    # FOR UPDATE : evite la double-finalisation si un end_call ou un webhook
+    # room_finished arrive exactement pendant la passe reconciler.
     result =
-      call
-      |> Call.changeset(%{
-        status: "ended",
-        ended_at: now,
-        duration_seconds: duration,
-        end_reason: "reconciler_orphan"
-      })
-      |> Repo.update()
+      Repo.transaction(fn ->
+        locked = Repo.get(Call, call.id, lock: "FOR UPDATE")
+
+        if is_nil(locked) or locked.status == "ended" do
+          :already_ended
+        else
+          now = DateTime.utc_now()
+          duration = DateTime.diff(now, locked.connected_at || locked.started_at, :second)
+
+          locked
+          |> Call.changeset(%{
+            status: "ended",
+            ended_at: now,
+            duration_seconds: duration,
+            end_reason: "reconciler_orphan"
+          })
+          |> Repo.update()
+        end
+      end)
 
     case result do
-      {:ok, _updated} ->
+      {:ok, :already_ended} ->
+        Logger.debug("RoomReconciler: call #{call.id} deja finalise, skip")
+
+      {:ok, {:ok, _updated}} ->
         Logger.info("RoomReconciler: call #{call.id} finalise (reconciler_orphan)")
 
-      {:error, changeset} ->
+      {:ok, {:error, changeset}} ->
         Logger.error(
           "RoomReconciler: echec finalisation call #{call.id}: #{inspect(changeset.errors)}"
+        )
+
+      {:error, reason} ->
+        Logger.error(
+          "RoomReconciler: echec tx finalisation call #{call.id}: #{inspect(reason)}"
         )
     end
   end

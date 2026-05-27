@@ -87,4 +87,36 @@ defmodule WhisprCalls.Workers.RingingTimeoutWorkerTest do
 
     assert :ok = RingingTimeoutWorker.expire_stale_ringing()
   end
+
+  test "mark_missed ne passe pas un call deja connected en missed (guard status)" do
+    # Simule la fenetre de race : le worker lit le call comme "ringing" dans
+    # expire_stale_ringing, mais un accept concurrent le flip "connected"
+    # avant que mark_missed ne prenne le lock. Le call doit rester "connected".
+    stale_started = DateTime.add(DateTime.utc_now(), -60, :second)
+
+    {:ok, call} =
+      %Call{}
+      |> Call.changeset(%{
+        initiator_id: Ecto.UUID.generate(),
+        conversation_id: Ecto.UUID.generate(),
+        type: "audio",
+        livekit_room: "call_guard_" <> Ecto.UUID.generate(),
+        started_at: stale_started
+      })
+      |> Repo.insert()
+
+    # Simule l accept concurrent : flipper le call en "connected" avant mark_missed.
+    {:ok, connected_call} =
+      call
+      |> Call.changeset(%{status: "connected", connected_at: DateTime.utc_now()})
+      |> Repo.update()
+
+    # mark_missed doit detecter que le status n est plus "ringing" et ignorer.
+    WhisprCalls.Workers.RingingTimeoutWorker.expire_stale_ringing()
+
+    reloaded = Repo.get!(Call, connected_call.id)
+    assert reloaded.status == "connected"
+
+    _ = LiveKitClientMock
+  end
 end
