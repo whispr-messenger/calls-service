@@ -8,6 +8,7 @@
 import Config
 
 config :whispr_calls,
+  env: config_env(),
   ecto_repos: [WhisprCalls.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 

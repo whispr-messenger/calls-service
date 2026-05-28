@@ -124,5 +124,8 @@ defmodule WhisprCallsWeb.Endpoint do
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
+
+  plug WhisprCallsWeb.Plugs.Cors
+
   plug WhisprCallsWeb.Router
 end
