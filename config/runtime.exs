@@ -175,6 +175,17 @@ if config_env() == :prod do
       messaging_http_endpoint: System.fetch_env!("MESSAGING_HTTP_ENDPOINT"),
       messaging_service_token: System.fetch_env!("MESSAGING_SERVICE_TOKEN")
 
+    # Block check user-service (WHISPR-block-calls). On refuse l'initiation
+    # d'un appel 1-1 si l'un des deux a bloque l'autre. Meme contrat HTTP
+    # interne que messaging-service (`x-internal-token`). Le token partage
+    # vient du secret `shared-internal-api-token` (cle INTERNAL_API_TOKEN),
+    # comme messaging. Sans ce client, le check tomberait fail-open (Stub)
+    # => on exige l'impl HTTP explicite en prod.
+    config :whispr_calls,
+      user_service_client: WhisprCalls.Services.HttpUserServiceClient,
+      user_service_internal_url: System.fetch_env!("USER_SERVICE_INTERNAL_URL"),
+      user_service_internal_token: System.fetch_env!("INTERNAL_API_TOKEN")
+
     # Validation optionnelle de iss / aud sur les JWT entrants. Si auth-service
     # emet ces claims, les enforcer ici evite qu un token destine a un autre
     # service (ex: media) soit accepte par calls-service.

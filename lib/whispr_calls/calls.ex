@@ -14,6 +14,7 @@ defmodule WhisprCalls.Calls do
   alias WhisprCalls.Events.Publisher
   alias WhisprCalls.Grpc.MessagingClient
   alias WhisprCalls.Repo
+  alias WhisprCalls.Services.UserService
 
   @type uuid :: String.t()
 
@@ -31,6 +32,7 @@ defmodule WhisprCalls.Calls do
 
     with {:ok, :member} <- verify_conversation_membership(initiator_id, conversation_id),
          :ok <- verify_invitees_are_members(conversation_id, participant_ids),
+         :ok <- verify_not_blocked(initiator_id, participant_ids),
          room_name <- generate_room_name(),
          {:ok, _room} <- LiveKitClient.create_room(room_name, []),
          {:ok, %{call: call}} <-
@@ -596,4 +598,30 @@ defmodule WhisprCalls.Calls do
         {:error, :invitee_not_member}
     end
   end
+
+  # Applique le contrat de blocage utilisateur sur l'initiation d'appel.
+  #
+  # Scope = appels 1-1 / directs : exactement un invite. C'est le cas clair
+  # ou un user bloque pourrait sonner la personne qui l'a bloque. On refuse
+  # l'appel AVANT de creer la room LiveKit si l'un des deux a bloque l'autre
+  # (isBlocked bidirectionnel cote user-service).
+  #
+  # Choix groupe : on ne filtre PAS les appels de groupe ici. Un appel de
+  # groupe se fait sur une conversation deja existante dont les membres ont
+  # ete valides par messaging-service ; filtrer par paire (initiateur vs
+  # chaque invite) demanderait N round-trips et une regle metier non triviale
+  # (exclure un invite bloque sans casser l'appel pour les autres ?). A
+  # traiter dans un ticket dedie si besoin.
+  #
+  # Fail-closed : sur erreur/timeout user-service, on considere comme bloque
+  # et on refuse, par coherence avec messaging-service.
+  defp verify_not_blocked(initiator_id, [invitee_id]) do
+    case UserService.check_user_blocked(initiator_id, invitee_id) do
+      {:ok, false} -> :ok
+      {:ok, true} -> {:error, :blocked}
+      {:error, _reason} -> {:error, :blocked}
+    end
+  end
+
+  defp verify_not_blocked(_initiator_id, _participant_ids), do: :ok
 end

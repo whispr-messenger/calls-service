@@ -141,6 +141,104 @@ defmodule WhisprCalls.CallsTest do
       # No call was created and no LiveKit interaction happened.
       assert Repo.all(Call) == []
     end
+
+    test "refuses a 1-1 call when one party blocked the other (initiator -> invitee)" do
+      use_user_service_mock()
+      initiator = Ecto.UUID.generate()
+      invitee = Ecto.UUID.generate()
+
+      expect(WhisprCalls.Services.UserServiceMock, :check_user_blocked, fn ^initiator, ^invitee ->
+        {:ok, true}
+      end)
+
+      assert {:error, :blocked} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: [invitee]
+               })
+
+      # No call was created and no LiveKit room was provisioned.
+      assert Repo.all(Call) == []
+    end
+
+    test "refuses a 1-1 call when the invitee blocked the initiator (reverse sens)" do
+      # isBlocked est bidirectionnel cote user-service : un seul appel
+      # couvre les deux sens, le mock renvoie {:ok, true} dans tous les cas.
+      use_user_service_mock()
+
+      expect(WhisprCalls.Services.UserServiceMock, :check_user_blocked, fn _a, _b ->
+        {:ok, true}
+      end)
+
+      assert {:error, :blocked} =
+               Calls.initiate_call(Ecto.UUID.generate(), Ecto.UUID.generate(), %{
+                 type: "video",
+                 participant_ids: [Ecto.UUID.generate()]
+               })
+
+      assert Repo.all(Call) == []
+    end
+
+    test "fail-closed: refuses the 1-1 call when user-service is unreachable" do
+      use_user_service_mock()
+
+      expect(WhisprCalls.Services.UserServiceMock, :check_user_blocked, fn _a, _b ->
+        {:error, :transient}
+      end)
+
+      assert {:error, :blocked} =
+               Calls.initiate_call(Ecto.UUID.generate(), Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: [Ecto.UUID.generate()]
+               })
+
+      assert Repo.all(Call) == []
+    end
+
+    test "allows a normal 1-1 call when neither party is blocked" do
+      use_user_service_mock()
+      initiator = Ecto.UUID.generate()
+      invitee = Ecto.UUID.generate()
+
+      expect(WhisprCalls.Services.UserServiceMock, :check_user_blocked, fn ^initiator, ^invitee ->
+        {:ok, false}
+      end)
+
+      expect(LiveKitClientMock, :create_room, fn _name, _opts -> {:ok, %{}} end)
+
+      expect(LiveKitClientMock, :generate_access_token, fn ^initiator, _room, _opts ->
+        {:ok, "lk_token"}
+      end)
+
+      assert {:ok, call, %{token: "lk_token"}} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "audio",
+                 participant_ids: [invitee]
+               })
+
+      assert call.status == "ringing"
+    end
+
+    test "group call (2+ invitees) skips the per-pair block check" do
+      # Le check de blocage est scope aux appels 1-1. Pour un appel de groupe
+      # on ne doit PAS appeler le client user-service (sinon Mox echouerait
+      # sur un appel non attendu). On laisse le Stub par defaut.
+      initiator = Ecto.UUID.generate()
+      invitee_a = Ecto.UUID.generate()
+      invitee_b = Ecto.UUID.generate()
+
+      expect(LiveKitClientMock, :create_room, fn _name, _opts -> {:ok, %{}} end)
+
+      expect(LiveKitClientMock, :generate_access_token, fn ^initiator, _room, _opts ->
+        {:ok, "lk_token"}
+      end)
+
+      assert {:ok, _call, _tokens} =
+               Calls.initiate_call(initiator, Ecto.UUID.generate(), %{
+                 type: "video",
+                 participant_ids: [invitee_a, invitee_b]
+               })
+    end
   end
 
   describe "accept_call/2" do
@@ -764,6 +862,20 @@ defmodule WhisprCalls.CallsTest do
     ])
 
     {user_id, invitee, call}
+  end
+
+  # Swap le client user-service pour le mock Mox le temps du test, puis
+  # restaure le Stub par defaut. Utilise par les tests de blocage 1-1.
+  defp use_user_service_mock do
+    Application.put_env(:whispr_calls, :user_service_client, WhisprCalls.Services.UserServiceMock)
+
+    on_exit(fn ->
+      Application.put_env(
+        :whispr_calls,
+        :user_service_client,
+        WhisprCalls.Services.UserService.Stub
+      )
+    end)
   end
 
   # Seeds a ringing call with 1 initiator (joined) + 1 invitee (invited)

@@ -50,6 +50,10 @@ config :whispr_calls, livekit_public_url: "wss://livekit.test"
 # `WhisprCalls.Grpc.MessagingClientMock` (defined in test_helper.exs).
 config :whispr_calls, messaging_client: WhisprCalls.Grpc.MessagingClient.Stub
 
+# user-service block check : Stub (jamais bloque) en test. Les tests qui
+# veulent asserter le refus swappent `WhisprCalls.Services.UserServiceMock`.
+config :whispr_calls, user_service_client: WhisprCalls.Services.UserService.Stub
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 

@@ -7,6 +7,11 @@ Mox.defmock(WhisprCalls.Grpc.MessagingClientMock, for: WhisprCalls.Grpc.Messagin
 # swap in MessagingClientMock explicitly.
 Application.put_env(:whispr_calls, :messaging_client, WhisprCalls.Grpc.MessagingClient.Stub)
 
+Mox.defmock(WhisprCalls.Services.UserServiceMock, for: WhisprCalls.Services.UserServiceBehaviour)
+# Default au Stub (jamais bloque) pour le happy-path. Les tests qui veulent
+# asserter le refus sur blocage swappent UserServiceMock explicitement.
+Application.put_env(:whispr_calls, :user_service_client, WhisprCalls.Services.UserService.Stub)
+
 # Default events publisher in tests: broadcasts to Phoenix.PubSub so tests
 # can subscribe with `WhisprCalls.Events.PublisherTestRecorder.subscribe()`
 # and `assert_receive` published events. Avoids depending on a live Redis.
