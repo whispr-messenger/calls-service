@@ -2,14 +2,14 @@ name: 🚀 CI Pipeline
 
 on:
   push:
-    branches: [main, develop, deploy/preprod]
+    branches: [main, develop, deploy/preprod, deploy/preprod2]
     paths-ignore:
       - 'k8s/**'
       - '**.md'
       - 'documentation/**'
       - '.github/workflows/cd.yml'
   pull_request:
-    branches: [main, develop, deploy/preprod]
+    branches: [main, develop, deploy/preprod, deploy/preprod2]
     paths-ignore:
       - 'k8s/**'
       - '**.md'
@@ -70,6 +70,6 @@ jobs:
     uses: ./.github/workflows/docker.yml
     with:
       ref: ${{ github.ref }}
-      should_deploy: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/deploy/preprod') && github.event_name == 'push' }}
+      should_deploy: ${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/deploy/preprod' || github.ref == 'refs/heads/deploy/preprod2') && github.event_name == 'push' }}
     secrets:
       SECRET_KEY_BASE: ${{ secrets.SECRET_KEY_BASE }}

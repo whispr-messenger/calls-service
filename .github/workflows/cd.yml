@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ['🚀 CI Pipeline']
     types: [completed]
-    branches: [main, develop, deploy/avant-preprod, deploy/preprod]
+    branches: [main, develop, deploy/avant-preprod, deploy/preprod, deploy/preprod2]
   workflow_dispatch:
     inputs:
       commit_sha:
@@ -100,8 +100,13 @@ jobs:
           echo "trigger_branch=${TRIGGER_BRANCH}" >> $GITHUB_OUTPUT
           if [ "$TRIGGER_BRANCH" = "main" ]; then
             echo "infra_branch=main" >> $GITHUB_OUTPUT
+            echo "env_dir=preprod" >> $GITHUB_OUTPUT
+          elif [ "$TRIGGER_BRANCH" = "deploy/preprod2" ]; then
+            echo "infra_branch=deploy/preprod2" >> $GITHUB_OUTPUT
+            echo "env_dir=preprod2" >> $GITHUB_OUTPUT
           else
             echo "infra_branch=deploy/preprod" >> $GITHUB_OUTPUT
+            echo "env_dir=preprod" >> $GITHUB_OUTPUT
           fi
 
       - name: Checkout infrastructure repository
@@ -158,12 +163,13 @@ jobs:
               fi
             done
           else
-            # Only update preprod on non-main branches
-            echo "Updating preprod manifests only..."
+            # Non-main branches deploy to a single env dir (preprod or preprod2)
+            ENV_DIR="${{ steps.branch_info.outputs.env_dir }}"
+            echo "Updating ${ENV_DIR} manifests only..."
 
-            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/deployment.yaml
-            if [ -f k8s/whispr/preprod/calls-service/migration-job.yaml ]; then
-              yq -i 'select(.kind == "Job").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' k8s/whispr/preprod/calls-service/migration-job.yaml
+            yq -i 'select(.kind == "Deployment").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' "k8s/whispr/${ENV_DIR}/calls-service/deployment.yaml"
+            if [ -f "k8s/whispr/${ENV_DIR}/calls-service/migration-job.yaml" ]; then
+              yq -i 'select(.kind == "Job").spec.template.spec.containers[0].image = "'"${FULL_IMAGE}"'"' "k8s/whispr/${ENV_DIR}/calls-service/migration-job.yaml"
             fi
           fi
 
@@ -171,7 +177,7 @@ jobs:
         run: |
           TRIGGER_BRANCH="${{ steps.branch_info.outputs.trigger_branch }}"
 
-          for DIR in prod production preprod; do
+          for DIR in prod production preprod preprod2; do
             if [ -f "k8s/whispr/${DIR}/calls-service/deployment.yaml" ]; then
               echo "=== ${DIR} deployment ==="
               yq '.spec.template.spec.containers[0].image' "k8s/whispr/${DIR}/calls-service/deployment.yaml"
@@ -191,10 +197,11 @@ jobs:
           INFRA_BRANCH="${{ steps.branch_info.outputs.infra_branch }}"
 
           # Collect only files that actually exist (some envs may not be bootstrapped yet)
+          ENV_DIR="${{ steps.branch_info.outputs.env_dir }}"
           if [ "$TRIGGER_BRANCH" = "main" ]; then
             CANDIDATES="k8s/whispr/prod/calls-service/deployment.yaml k8s/whispr/prod/calls-service/migration-job.yaml k8s/whispr/production/calls-service/deployment.yaml k8s/whispr/production/calls-service/migration-job.yaml k8s/whispr/preprod/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/migration-job.yaml"
           else
-            CANDIDATES="k8s/whispr/preprod/calls-service/deployment.yaml k8s/whispr/preprod/calls-service/migration-job.yaml"
+            CANDIDATES="k8s/whispr/${ENV_DIR}/calls-service/deployment.yaml k8s/whispr/${ENV_DIR}/calls-service/migration-job.yaml"
           fi
           FILES_TO_ADD=""
           for f in $CANDIDATES; do
